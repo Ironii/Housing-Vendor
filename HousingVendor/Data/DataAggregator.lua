@@ -5,6 +5,7 @@ local _G = _G
 _G.HousingExpansionData = _G.HousingExpansionData or {}
 _G.HousingProfessionData = _G.HousingProfessionData or {}
 _G.HousingReputationData = _G.HousingReputationData or {}
+_G.HousingCostData = _G.HousingCostData or {}
 -- Legacy name used by other modules (Reputation.lua / PreviewPanelData.lua)
 _G.HousingReputations = _G.HousingReputations or _G.HousingReputationData
 
@@ -17,6 +18,17 @@ _G.HousingVendorPool = _G.HousingVendorPool or {}
 _G.HousingVendorPoolIndex = _G.HousingVendorPoolIndex or {}
 _G.HousingItemVendorIndex = _G.HousingItemVendorIndex or {}
 _G.HousingVendorFilterIndex = _G.HousingVendorFilterIndex or { vendorsByExpansion = {}, zonesByExpansion = {} }
+
+-- PERFORMANCE: Defer all data processing until first UI open
+-- Store raw data in pending tables during file load, then process later
+local pendingVendorData = {}
+local pendingQuestData = {}
+local pendingAchievementData = {}
+local pendingDropData = {}
+local pendingReputationData = {}
+local pendingProfessionData = {}
+local pendingCostData = {}
+local isDataProcessed = false
 
 -- Counters for statistics
 local stats = {
@@ -170,17 +182,58 @@ end
 _G.HousingDataAggregator = _G.HousingDataAggregator or {}
 
 function _G.HousingDataAggregator:RegisterExpansionItems(dataType, items)
+    -- PERFORMANCE: Don't process data at file load time - just store it for later
+    -- This eliminates the 20%+ CPU spike at ADDON_LOADED
     if dataType == "vendor" then
+        table.insert(pendingVendorData, items)
+    elseif dataType == "quest" then
+        table.insert(pendingQuestData, items)
+    elseif dataType == "achievement" then
+        table.insert(pendingAchievementData, items)
+    elseif dataType == "drop" then
+        table.insert(pendingDropData, items)
+    end
+end
+
+function _G.HousingDataAggregator:RegisterReputation(items)
+    -- PERFORMANCE: Defer processing until UI opens
+    if items then
+        table.insert(pendingReputationData, items)
+    end
+end
+
+function _G.HousingDataAggregator:RegisterProfession(items)
+    -- PERFORMANCE: Defer processing until UI opens
+    if items then
+        table.insert(pendingProfessionData, items)
+    end
+end
+
+function _G.HousingDataAggregator:RegisterCosts(costs)
+    -- PERFORMANCE: Defer processing until UI opens
+    if type(costs) == "table" then
+        table.insert(pendingCostData, costs)
+    end
+end
+
+-- PERFORMANCE: Process all pending data (called on first UI open)
+function _G.HousingDataAggregator:ProcessPendingData()
+    if isDataProcessed then
+        return  -- Already processed
+    end
+
+    print("|cFF8A7FD4HousingVendor:|r Processing deferred data aggregation...")
+
+    -- Process vendor data
+    for _, items in ipairs(pendingVendorData) do
         RegisterByItemID(_G.HousingExpansionData, items, "vendor", "vendorCount")
 
-        -- Build compact vendor filter data + per-item vendor indices (no full record duplication).
         if items then
             for _, item in ipairs(items) do
                 local itemID = tonumber(item and item.itemID)
                 local vd = item and item.vendorDetails or nil
 
                 if vd then
-                    -- Normalize reputation faction IDs when present (can be numeric string or faction name).
                     if vd.factionID and vd.factionID ~= "" and vd.factionID ~= "None" then
                         vd.factionID = ResolveReputationFactionID(vd.factionID) or vd.factionID
                     end
@@ -205,84 +258,146 @@ function _G.HousingDataAggregator:RegisterExpansionItems(dataType, items)
                 end
             end
         end
-    elseif dataType == "quest" then
+    end
+
+    -- Process quest data
+    for _, items in ipairs(pendingQuestData) do
         RegisterByItemID(_G.HousingExpansionData, items, "quest", "questCount")
-    elseif dataType == "achievement" then
+    end
+
+    -- Process achievement data
+    for _, items in ipairs(pendingAchievementData) do
         RegisterByItemID(_G.HousingExpansionData, items, "achievement", "achievementCount")
-    elseif dataType == "drop" then
+    end
+
+    -- Process drop data
+    for _, items in ipairs(pendingDropData) do
         RegisterByItemID(_G.HousingExpansionData, items, "drop", "dropCount")
     end
-end
 
-function _G.HousingDataAggregator:RegisterReputation(items)
-    if not items then return end
-    for _, item in ipairs(items) do
-        -- Check if this is a faction definition (has factionID at top level)
-        if item.factionID and not item.itemID then
-            local factionIDStr = tostring(item.factionID)
-            local factionIDNum = tonumber(item.factionID)
+    -- Process reputation data
+    for _, items in ipairs(pendingReputationData) do
+        for _, item in ipairs(items) do
+            -- Check if this is a faction definition
+            if item.factionID and not item.itemID then
+                local factionIDStr = tostring(item.factionID)
+                local factionIDNum = tonumber(item.factionID)
 
-            _G.HousingReputationData[factionIDStr] = item
-            _G.HousingReputations[factionIDStr] = item
+                _G.HousingReputationData[factionIDStr] = item
+                _G.HousingReputations[factionIDStr] = item
 
-            -- Also index by numeric key for WoW APIs that require numeric faction IDs.
-            if factionIDNum then
-                _G.HousingReputationData[factionIDNum] = item
-                _G.HousingReputations[factionIDNum] = item
-            end
-            stats.reputationCount = stats.reputationCount + 1
-        end
-
-        -- Check if this is a reputation-gated item (has itemID + vendorDetails)
-        if item.itemID and item.vendorDetails then
-            local itemID = tonumber(item.itemID)
-            if itemID then
-                -- Add to HousingExpansionData so ReputationLoader can find it
-                if not _G.HousingExpansionData[itemID] then
-                    _G.HousingExpansionData[itemID] = {}
+                if factionIDNum then
+                    _G.HousingReputationData[factionIDNum] = item
+                    _G.HousingReputations[factionIDNum] = item
                 end
-                -- Store as vendor type (it's vendor-sold with reputation requirement)
-                _G.HousingExpansionData[itemID].vendor = item
+                stats.reputationCount = stats.reputationCount + 1
+            end
 
-                -- Build vendor filter data + per-item vendor indices
-                local vd = item.vendorDetails
-                if vd then
-                    if vd.factionID and vd.factionID ~= "" and vd.factionID ~= "None" then
-                        vd.factionID = ResolveReputationFactionID(vd.factionID) or vd.factionID
+            -- Check if this is a reputation-gated item
+            if item.itemID and item.vendorDetails then
+                local itemID = tonumber(item.itemID)
+                if itemID then
+                    if not _G.HousingExpansionData[itemID] then
+                        _G.HousingExpansionData[itemID] = {}
                     end
+                    _G.HousingExpansionData[itemID].vendor = item
 
-                    local expansion = vd.expansion
-                    local vendorName = vd.vendorName
-                    local zoneName = vd.location
+                    local vd = item.vendorDetails
+                    if vd then
+                        if vd.factionID and vd.factionID ~= "" and vd.factionID ~= "None" then
+                            vd.factionID = ResolveReputationFactionID(vd.factionID) or vd.factionID
+                        end
 
-                    if vendorName and vendorName ~= "" and vendorName ~= "None" then
-                        AddFilterEntry(expansion, vendorName, zoneName)
+                        local expansion = vd.expansion
+                        local vendorName = vd.vendorName
+                        local zoneName = vd.location
 
-                        local vendorIndex = GetOrCreateVendorIndex(vd)
-                        if vendorIndex then
-                            local list = _G.HousingItemVendorIndex[itemID]
-                            if not list then
-                                list = {}
-                                _G.HousingItemVendorIndex[itemID] = list
+                        if vendorName and vendorName ~= "" and vendorName ~= "None" then
+                            AddFilterEntry(expansion, vendorName, zoneName)
+
+                            local vendorIndex = GetOrCreateVendorIndex(vd)
+                            if vendorIndex then
+                                local list = _G.HousingItemVendorIndex[itemID]
+                                if not list then
+                                    list = {}
+                                    _G.HousingItemVendorIndex[itemID] = list
+                                end
+                                list[#list + 1] = vendorIndex
                             end
-                            list[#list + 1] = vendorIndex
                         end
                     end
                 end
             end
         end
     end
-end
 
-function _G.HousingDataAggregator:RegisterProfession(items)
-    if not items then return end
-    for _, item in ipairs(items) do
-        local itemID = tonumber(item.itemID)
-        if itemID and not _G.HousingProfessionData[itemID] then
-            _G.HousingProfessionData[itemID] = item
-            stats.professionCount = stats.professionCount + 1
+    -- Process profession data
+    for _, items in ipairs(pendingProfessionData) do
+        for _, item in ipairs(items) do
+            local itemID = tonumber(item.itemID)
+            if itemID and not _G.HousingProfessionData[itemID] then
+                _G.HousingProfessionData[itemID] = item
+                stats.professionCount = stats.professionCount + 1
+            end
         end
     end
+
+    -- Process cost data
+    for _, costs in ipairs(pendingCostData) do
+        local function ApplyCostForItemID(itemID, costInfo)
+            local idNum = tonumber(itemID)
+            if not idNum or type(costInfo) ~= "table" then
+                return
+            end
+
+            local existing = _G.HousingCostData[idNum]
+            if not existing then
+                existing = {}
+                _G.HousingCostData[idNum] = existing
+            end
+
+            if (existing.cost == nil or existing.cost == "") and type(costInfo.cost) == "string" and costInfo.cost ~= "" then
+                existing.cost = costInfo.cost
+            end
+
+            if (existing.buyPriceCopper == nil or existing.buyPriceCopper == 0) and tonumber(costInfo.buyPriceCopper) then
+                existing.buyPriceCopper = tonumber(costInfo.buyPriceCopper) or existing.buyPriceCopper
+            end
+
+            if (existing.costComponents == nil or type(existing.costComponents) ~= "table" or #existing.costComponents == 0) and type(costInfo.costComponents) == "table" then
+                existing.costComponents = costInfo.costComponents
+            end
+        end
+
+        for itemID, costInfo in pairs(costs) do
+            if type(itemID) == "table" then
+                for _, groupedID in ipairs(itemID) do
+                    ApplyCostForItemID(groupedID, costInfo)
+                end
+            else
+                ApplyCostForItemID(itemID, costInfo)
+            end
+        end
+    end
+
+    -- Clear pending data to free memory
+    pendingVendorData = {}
+    pendingQuestData = {}
+    pendingAchievementData = {}
+    pendingDropData = {}
+    pendingReputationData = {}
+    pendingProfessionData = {}
+    pendingCostData = {}
+
+    isDataProcessed = true
+
+    -- Report stats
+    local expansionCount = 0
+    for _ in pairs(_G.HousingExpansionData) do
+        expansionCount = expansionCount + 1
+    end
+    print(string.format("|cFF8A7FD4HousingVendor:|r Processed %d items (%d vendors, %d quests, %d achievements, %d professions)",
+        expansionCount, stats.vendorCount, stats.questCount, stats.achievementCount, stats.professionCount))
 end
 
 -- Convenience function globals for generated files
@@ -298,6 +413,10 @@ function _G.HousingDataAggregator_RegisterProfession(items)
     return _G.HousingDataAggregator:RegisterProfession(items)
 end
 
+function _G.HousingDataAggregator_RegisterCosts(costs)
+    return _G.HousingDataAggregator:RegisterCosts(costs)
+end
+
 -- Legacy compatibility (best-effort):
 -- Some old generated files assign globals like `vendor = { ... }` instead of calling the
 -- registration helpers. Historically we captured that via a _G metatable hook, but modern WoW
@@ -305,6 +424,8 @@ end
 --
 -- We now attempt to install the hook safely; if it's blocked, data files must use the explicit
 -- `HousingDataAggregator_Register*` functions (all current generated files do).
+-- NOTE: Disabled by default to prevent UI taint (this hook can taint protected UI on ESC/logout).
+local ENABLE_LEGACY_GLOBAL_ASSIGNMENT_HOOK = false
 local function TryInstallLegacyGlobalAssignmentHook()
     local existingMeta = getmetatable(_G)
     if type(existingMeta) ~= "table" then
@@ -345,27 +466,9 @@ local function TryInstallLegacyGlobalAssignmentHook()
     pcall(setmetatable, _G, newMeta)
 end
 
-TryInstallLegacyGlobalAssignmentHook()
+if ENABLE_LEGACY_GLOBAL_ASSIGNMENT_HOOK then
+    TryInstallLegacyGlobalAssignmentHook()
+end
 
--- Register a callback to print stats when all files are loaded
-local frame = CreateFrame("Frame")
-frame:RegisterEvent("ADDON_LOADED")
-frame:SetScript("OnEvent", function(self, event, addonName)
-    if addonName == DATA_ADDON_NAME then
-        -- Calculate total indexed items
-        local totalExpansionItems = 0
-        for _ in pairs(_G.HousingExpansionData) do
-            totalExpansionItems = totalExpansionItems + 1
-        end
-
-        local totalProfessionItems = 0
-        for _ in pairs(_G.HousingProfessionData) do
-            totalProfessionItems = totalProfessionItems + 1
-        end
-
-        -- Stats available in stats table if needed for debugging:
-        -- stats.vendorCount, stats.questCount, stats.achievementCount, etc.
-
-        self:UnregisterEvent("ADDON_LOADED")
-    end
-end)
+-- PERFORMANCE: No ADDON_LOADED handler needed - all processing is deferred to first UI open
+-- Previously this calculated stats, but that work is now done in ProcessPendingData()
