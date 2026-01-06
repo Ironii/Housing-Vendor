@@ -1,7 +1,7 @@
 ## Interface: 120000, 120001, 110207
 ## Title: |cFFFF0000Housing|r|cFF0066FFVendor|r
 ## Notes: Housing Decor Vendors Database
-## Version:  26.12.25.90
+## Version:  05.01.26.03
 ## IconTexture: Interface\Icons\INV_Misc_Map02.blp
 ## Category-enUS: Decor Vendors
 ## Author: RenZhi
@@ -21,14 +21,17 @@ Data\AllItems.lua
 
 Data\NonVendor\Achievements.lua
 Data\NonVendor\Quests.lua
+Data\NonVendor\Costs.lua
 Data\NonVendor\Professions.lua
 Data\NonVendor\ReputationFactions.lua
 Data\NonVendor\ReputationItems.lua
 
 Data\VendorLocations\Classic.lua
 Data\VendorLocations\BurningCrusade.lua
+Data\VendorLocations\WrathoftheLichKing.lua
 Data\VendorLocations\Cataclysm.lua
 Data\VendorLocations\MistsofPandaria.lua
+Data\VendorLocations\WarlordsofDraenor.lua
 Data\VendorLocations\Legion.lua
 Data\VendorLocations\BattleforAzeroth.lua
 Data\VendorLocations\Shadowlands.lua
@@ -36,7 +39,6 @@ Data\VendorLocations\Dragonflight.lua
 Data\VendorLocations\TheWarWithin.lua
 Data\VendorLocations\Midnight.lua
 
-Locale\Locale.lua
 Locale\enUS.lua
 Locale\deDE.lua
 Locale\esES.lua
@@ -48,6 +50,7 @@ Locale\ptBR.lua
 Locale\ruRU.lua
 Locale\zhCN.lua
 Locale\zhTW.lua
+Locale\Locale.lua
 
 Modules\Data\ReputationLoader.lua
 Modules\Data\ProfessionReagents.lua
@@ -63,6 +66,10 @@ Modules\Tools\TooltipInfoExtractor.lua
 Modules\Tools\Reputation.lua
 Modules\Tools\CompletionTracker.lua
 Modules\Tools\VersionFilter.lua
+
+Modules\Achievements\Achievement.lua
+
+Modules\Reputation\Reputation.lua
 
 Modules\UI\UITheme.lua
 
@@ -88,20 +95,25 @@ Modules\UI\PreviewPanelData.lua
 Modules\UI\PreviewPanel\DataFormatter.lua
 Modules\UI\PreviewPanel.lua
 Modules\UI\ConfigUI.lua
+Modules\UI\AchievementsUI.lua
+Modules\UI\ReputationUI.lua
 Modules\UI\StatisticsUI.lua
+Modules\UI\AuctionHouseUI.lua
 Modules\UI\Statistics\Data.lua
 Modules\UI\Statistics\Charts.lua
 Modules\UI\Statistics\Filters.lua
+Modules\UI\VendorMarker.lua
 Modules\UI\OutstandingItemsUI.lua
 Modules\UI\OutstandingItems\Detection.lua
 Modules\UI\OutstandingItems\Popup.lua
 Modules\UI\OutstandingItems\Events.lua
 Modules\UI\MinimapButton.lua
 
+Modules\API\CollectionAPI.lua
+Modules\API\AuctionHouseAPI.lua
 Modules\API\HousingAPI.lua
 Modules\API\HousingAPICache.lua
 Modules\API\HousingCatalogAPI.lua
-Modules\API\CollectionAPI.lua
 Modules\API\HousingDecorAPI.lua
 Modules\API\HousingEditorAPI.lua
 Modules\API\HousingDataEnhancer.lua
