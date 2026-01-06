@@ -1,19 +1,17 @@
 -- DataLoader.lua
--- Loads the large data tables via an optional LoadOnDemand addon (`HousingVendor_DataPack`).
+-- Data is loaded directly via TOC (single addon mode)
 
 local _G = _G
 
 _G.HousingDataLoader = _G.HousingDataLoader or {}
 local DataLoader = _G.HousingDataLoader
 
-local DATA_ADDON_NAME = "HousingVendor_DataPack"
-
 function DataLoader:IsDataLoaded()
     return type(_G.HousingAllItems) == "table" and next(_G.HousingAllItems) ~= nil
 end
 
 function DataLoader:LoadData(callback)
-    -- Data is always loaded (no longer using LoadOnDemand)
+    -- Data is always loaded (single-TOC mode)
     local loaded = self:IsDataLoaded()
 
     -- Rebuild any derived lookup tables which were previously built at login.

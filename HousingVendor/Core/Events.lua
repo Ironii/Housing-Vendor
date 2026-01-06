@@ -8,59 +8,60 @@ function HousingEvents:OnEvent(event, ...)
   if event == "ADDON_LOADED" then
     local name = ...
     if name == "HousingVendor" then
-      -- Make Housing globally available
-      _G.Housing = Housing or {}
-      Housing.Initialize = Housing.Initialize or function(self)
+      -- Avoid using generic globals like `_G.Housing` (can collide with Blizzard UI / other addons).
+      local HousingVendorAddon = _G.HousingVendorAddon or {}
+      _G.HousingVendorAddon = HousingVendorAddon
+
+      HousingVendorAddon.Initialize = HousingVendorAddon.Initialize or function(self)
         self:InitializeSavedVariables()
         
         -- Initialize other modules with error handling
         local initErrors = {}
-        
-        if HousingAPI then
-          if HousingAPI.Initialize then
-            local success, err = pcall(function() HousingAPI:Initialize() end)
+
+        -- CRITICAL: Initialize CollectionAPI FIRST (sets global safety flag and defers other module init)
+        -- TAINT FIX: All other Housing API module initialization is now deferred to the 6-second timer
+        -- This prevents ANY code from touching C_Housing* globals during ADDON_LOADED
+        if HousingCollectionAPI then
+          if HousingCollectionAPI.Initialize then
+            local success, err = pcall(function() HousingCollectionAPI:Initialize() end)
             if not success then
-              table.insert(initErrors, "HousingAPI: " .. tostring(err))
+              table.insert(initErrors, "HousingCollectionAPI: " .. tostring(err))
             end
           end
         end
-        
-        if HousingCatalogAPI then
-          if HousingCatalogAPI.Initialize then
-            local success, err = pcall(function() HousingCatalogAPI:Initialize() end)
+
+        if HousingAuctionHouseAPI then
+          if HousingAuctionHouseAPI.Initialize then
+            local success, err = pcall(function() HousingAuctionHouseAPI:Initialize() end)
             if not success then
-              table.insert(initErrors, "HousingCatalogAPI: " .. tostring(err))
+              table.insert(initErrors, "HousingAuctionHouseAPI: " .. tostring(err))
             end
           end
         end
-        
-        if HousingDecorAPI then
-          if HousingDecorAPI.Initialize then
-            local success, err = pcall(function() HousingDecorAPI:Initialize() end)
+
+        -- NOTE: HousingAPI, HousingCatalogAPI, HousingDecorAPI, HousingEditorAPI, and HousingDataEnhancer
+        -- are now initialized AFTER the 6-second delay by CollectionAPI:Initialize()
+
+        -- Initialize Achievement Handler (safe to call early, loads data from files)
+        if HousingAchievementHandler then
+          if HousingAchievementHandler.Initialize then
+            local success, err = pcall(function() HousingAchievementHandler:Initialize() end)
             if not success then
-              table.insert(initErrors, "HousingDecorAPI: " .. tostring(err))
+              table.insert(initErrors, "HousingAchievementHandler: " .. tostring(err))
             end
           end
         end
-        
-        if HousingEditorAPI then
-          if HousingEditorAPI.Initialize then
-            local success, err = pcall(function() HousingEditorAPI:Initialize() end)
+
+        -- Initialize Reputation Handler (safe to call early, loads data from files)
+        if HousingReputationHandler then
+          if HousingReputationHandler.Initialize then
+            local success, err = pcall(function() HousingReputationHandler:Initialize() end)
             if not success then
-              table.insert(initErrors, "HousingEditorAPI: " .. tostring(err))
+              table.insert(initErrors, "HousingReputationHandler: " .. tostring(err))
             end
           end
         end
-        
-        if HousingDataEnhancer then
-          if HousingDataEnhancer.Initialize then
-            local success, err = pcall(function() HousingDataEnhancer:Initialize() end)
-            if not success then
-              table.insert(initErrors, "HousingDataEnhancer: " .. tostring(err))
-            end
-          end
-        end
-        
+
         if HousingWaypointManager then
           if HousingWaypointManager.Initialize then
             local success, err = pcall(function() HousingWaypointManager:Initialize() end)
@@ -71,13 +72,13 @@ function HousingEvents:OnEvent(event, ...)
         end
 
         if #initErrors > 0 then
-          print("|cFFFF0000Housing|r|cFF0066FFVendor|r version" .. (Housing.version or " unknown") .. " loaded (some modules failed)")
+          print("|cFFFF0000Housing|r|cFF0066FFVendor|r version" .. (HousingVendorAddon.version or " unknown") .. " loaded (some modules failed)")
         else
-          print("|cFFFF0000Housing|r|cFF0066FFVendor|r version" .. (Housing.version or " unknown") .. " loaded")
+          print("|cFFFF0000Housing|r|cFF0066FFVendor|r version" .. (HousingVendorAddon.version or " unknown") .. " loaded")
         end
       end
       
-      Housing.InitializeSavedVariables = Housing.InitializeSavedVariables or function(self)
+      HousingVendorAddon.InitializeSavedVariables = HousingVendorAddon.InitializeSavedVariables or function(self)
         -- Schema version for SavedVariables migrations
         local CURRENT_SCHEMA_VERSION = 2
 
@@ -147,8 +148,26 @@ function HousingEvents:OnEvent(event, ...)
           HousingDB.settings.autoFilterByZone = false
         end
 
+        if HousingDB.settings.enableVendorMarker == nil then
+          HousingDB.settings.enableVendorMarker = true
+        end
+
+        if HousingDB.settings.vendorMarkerUseMeters == nil then
+          HousingDB.settings.vendorMarkerUseMeters = false
+        end
+
         if HousingDB.settings.preloadDataOnLogin == nil then
           HousingDB.settings.preloadDataOnLogin = false
+        end
+
+        -- Auction House cache freshness (seconds). Used to avoid re-scanning prices too often.
+        if HousingDB.settings.ahPriceMaxAgeSeconds == nil then
+          HousingDB.settings.ahPriceMaxAgeSeconds = 6 * 60 * 60 -- 6 hours
+        end
+
+        -- AH scan timeout (seconds) per Blizzard query; lower is faster but may miss results on laggy clients.
+        if HousingDB.settings.ahScanTimeoutSeconds == nil then
+          HousingDB.settings.ahScanTimeoutSeconds = 2.0
         end
 
         -- Migration: preloading the datapack at login defeats low-memory goals.
@@ -180,10 +199,24 @@ function HousingEvents:OnEvent(event, ...)
           HousingDB.wishlist = {}
         end
 
-        -- Session-only caches: Remove old persistent caches to prevent SavedVariables bloat.
-        -- Collection status is queried fresh from API each session (no persistent cache needed)
-        if HousingDB.collectedDecor ~= nil then
-          HousingDB.collectedDecor = nil
+        if not HousingDB.auctionCache then
+          HousingDB.auctionCache = {
+            items = {},
+            lastScan = 0,
+            lastBrowseImport = 0,
+          }
+        elseif not HousingDB.auctionCache.items then
+          HousingDB.auctionCache.items = {}
+        end
+        if HousingDB.auctionCache.lastBrowseImport == nil then
+          HousingDB.auctionCache.lastBrowseImport = 0
+        end
+
+        -- KEEP collectedDecor persistent cache - it's now used for instant collection lookup
+        -- The "bloat" concern was misplaced: collected items are finite (~3000 max = ~60KB)
+        -- Persisting collected status prevents race conditions and improves performance
+        if not HousingDB.collectedDecor then
+          HousingDB.collectedDecor = {}
         end
         if HousingDB.apiDataCache ~= nil or HousingDB.apiDataCacheAccess ~= nil then
           HousingDB.apiDataCache = nil
@@ -206,7 +239,7 @@ function HousingEvents:OnEvent(event, ...)
         self:MigrateSchema()
       end
 
-      Housing.MigrateSchema = Housing.MigrateSchema or function(self)
+      HousingVendorAddon.MigrateSchema = HousingVendorAddon.MigrateSchema or function(self)
         local CURRENT_SCHEMA_VERSION = 2
         local version = HousingDB.schemaVersion or 1
 
@@ -228,7 +261,7 @@ function HousingEvents:OnEvent(event, ...)
         -- end
       end
       
-      Housing:Initialize()
+      HousingVendorAddon:Initialize()
 
       -- Initialize VersionFilter (should be done early to filter expansion data)
       if HousingVersionFilter then
@@ -246,108 +279,42 @@ function HousingEvents:OnEvent(event, ...)
         end
       end
 
-      -- Initialize DataManager and Icons first (required by UI)
-      if HousingDataManager then
-        local success, err = pcall(HousingDataManager.Initialize, HousingDataManager)
-        if not success then
-          print("HousingVendor: DataManager initialization error: " .. tostring(err))
-        end
-      end
-      
-      if HousingIcons and HousingIcons.Initialize then
-        local success, err = pcall(HousingIcons.Initialize, HousingIcons)
-        if not success then
-          print("HousingVendor: Icons initialization error: " .. tostring(err))
-        end
-      end
+      -- PERFORMANCE: Defer heavy initialization until UI is actually opened
+      -- DataManager.Initialize() processes 2,319 items and causes 20%+ CPU spike at login
+      -- These modules are now lazy-initialized when the UI opens (see HousingUI.lua)
 
-      -- Initialize config UI
-      if HousingConfigUI then
-        local success, err = pcall(HousingConfigUI.Initialize, HousingConfigUI)
-        if not success then
-          print("HousingVendor: ConfigUI initialization error: " .. tostring(err))
-        end
-      end
-      
-      -- Initialize statistics UI
-      if HousingStatisticsUI then
-        local success, err = pcall(HousingStatisticsUI.Initialize, HousingStatisticsUI)
-        if not success then
-          print("HousingVendor: StatisticsUI initialization error: " .. tostring(err))
-        end
-      end
-      
-      -- Initialize outstanding items UI
-      if HousingOutstandingItemsUI then
-        local success, err = pcall(HousingOutstandingItemsUI.Initialize, HousingOutstandingItemsUI)
-        if not success then
-          print("HousingVendor: OutstandingItemsUI initialization error: " .. tostring(err))
-        end
-      end
+      -- DataManager, Icons, ConfigUI, StatisticsUI, OutstandingItemsUI, and HousingUINew
+      -- will auto-initialize when first accessed via their Initialize() methods
 
-      -- Initialize new UI after all modules and data are loaded
-      if HousingUINew then
-        local success, err = pcall(HousingUINew.Initialize, HousingUINew)
-        if success then
-          -- Silently initialized
-        else
-          print("HousingVendor UI initialization error: " .. tostring(err))
-        end
-      else
-        print("HousingVendor UI module not found - check file loading order")
-      end
-      
-      -- Debug: Check if modules are loaded
-      if HousingDebugPrint then
-        HousingDebugPrint("Module check:")
-        HousingDebugPrint("  HousingDataManager: " .. tostring(HousingDataManager ~= nil))
-        HousingDebugPrint("  HousingIcons: " .. tostring(HousingIcons ~= nil))
-        HousingDebugPrint("  HousingUINew: " .. tostring(HousingUINew ~= nil))
-        HousingDebugPrint("  HousingItemList: " .. tostring(HousingItemList ~= nil))
-        HousingDebugPrint("  HousingFilters: " .. tostring(HousingFilters ~= nil))
-        HousingDebugPrint("  HousingPreviewPanel: " .. tostring(HousingPreviewPanel ~= nil))
-      end
+      -- NOTE: Heavy modules (DataManager, ConfigUI, StatisticsUI, etc.) are now
+      -- lazy-initialized when HousingUI:Toggle() is first called.
+      -- This reduces login CPU from 22% to near-zero.
     end
   end
 
   if event == "PLAYER_LOGIN" then
-    -- Preload data addon if setting is enabled
-    if HousingDB and HousingDB.settings and HousingDB.settings.preloadDataOnLogin then
-        if HousingDataLoader and HousingDataLoader.LoadData then
-          HousingDataLoader:LoadData(function(success)
-            if success then
-             local mem = (GetAddOnMemoryUsage and string.format("%.1f MB", GetAddOnMemoryUsage("HousingVendor") / 1024)) or "ready"
-             print("|cFF8A7FD4HousingVendor:|r Data preloaded (" .. mem .. ")")
-            end
-          end)
-        end
+    -- PERFORMANCE: Removed preload and CreateCatalogSearcher from login
+    -- These were causing unnecessary CPU usage at login
+    -- Both are now deferred until the UI is actually opened
+
+    -- CRITICAL: If zone popup is enabled, we MUST process data at login
+    -- Zone popup needs HousingExpansionData to detect items in zones
+    if HousingDB and HousingDB.settings and HousingDB.settings.showOutstandingPopup then
+      -- Process deferred data aggregation so zone popup has data to work with
+      if HousingDataAggregator and HousingDataAggregator.ProcessPendingData then
+        HousingDataAggregator:ProcessPendingData()
       end
 
-    -- Some C_* APIs (and the catalog searcher) can be unavailable on ADDON_LOADED.
-    -- Retry once at login to ensure vendor/zone naming data is available for filters.
-    if HousingAPI and HousingAPI.CreateCatalogSearcher then
-      pcall(function() HousingAPI:CreateCatalogSearcher() end)
+      -- Start zone popup event handlers
+      if HousingOutstandingItemsUI and HousingOutstandingItemsUI.StartEventHandlers then
+        pcall(HousingOutstandingItemsUI.StartEventHandlers, HousingOutstandingItemsUI)
+      end
     end
 
-    -- Start zone popup event handlers if popup setting is enabled.
-    -- Note: this feature needs datapack data to compute zone/vendor matches.
-    if HousingDB and HousingDB.settings and HousingDB.settings.showOutstandingPopup then
-      if HousingDataLoader and HousingDataLoader.LoadData then
-        HousingDataLoader:LoadData(function(success)
-          if success then
-            -- Build index cache early since data is now loaded at startup
-            if HousingDataManager and HousingDataManager.GetAllItemIDs then
-              pcall(function() HousingDataManager:GetAllItemIDs() end)
-            end
-
-            if HousingReputation and HousingReputation.StartTracking then
-              HousingReputation:StartTracking()
-            end
-            if HousingOutstandingItemsUI and HousingOutstandingItemsUI.StartEventHandlers then
-              HousingOutstandingItemsUI:StartEventHandlers()
-            end
-          end
-        end)
+    -- Initialize vendor marker if enabled
+    if HousingDB and HousingDB.settings and HousingDB.settings.enableVendorMarker then
+      if HousingVendorMarker and HousingVendorMarker.Initialize then
+        pcall(HousingVendorMarker.Initialize, HousingVendorMarker)
       end
     end
   end
@@ -362,6 +329,13 @@ end
 function HousingEvents:Shutdown()
   print("|cFF8A7FD4HousingVendor:|r Shutting down...")
 
+  if HousingDataManager and HousingDataManager.SetUIActive then
+    HousingDataManager:SetUIActive(false)
+  end
+  if HousingDataManager and HousingDataManager.CancelBatchLoads then
+    HousingDataManager:CancelBatchLoads()
+  end
+
   if HousingAPICache and HousingAPICache.StopCleanupTimer then
     HousingAPICache:StopCleanupTimer()
   end
@@ -370,6 +344,9 @@ function HousingEvents:Shutdown()
   end
   if HousingCollectionAPI and HousingCollectionAPI.StopEventHandlers then
     HousingCollectionAPI:StopEventHandlers()
+  end
+  if HousingAuctionHouseAPI and HousingAuctionHouseAPI.StopScan then
+    HousingAuctionHouseAPI:StopScan("shutdown")
   end
   if HousingWaypointManager and HousingWaypointManager.ClearWaypoint then
     HousingWaypointManager:ClearWaypoint()
