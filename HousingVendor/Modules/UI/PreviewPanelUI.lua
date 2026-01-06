@@ -8,8 +8,6 @@ local L = _G["HousingVendorL"] or {}
 local PreviewPanelUI = {}
 PreviewPanelUI.__index = PreviewPanelUI
 
-local L = _G["HousingVendorLocale"] or {}
-
 local function GetTheme()
     return HousingTheme or {}
 end
@@ -41,7 +39,6 @@ function PreviewPanelUI:CreateUI(parent, previewFrame)
     self:CreateModelViewer(previewFrame)
     self:CreateDetailsPanel(previewFrame)
     self:CreateMapButton(previewFrame)
-    self:CreateAchievementButton(previewFrame)
 end
 
 function PreviewPanelUI:CreateHeader(previewFrame)
@@ -151,41 +148,19 @@ function PreviewPanelUI:CreateAchievementButton(previewFrame)
 
     local achievementText = achievementBtn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     achievementText:SetPoint("CENTER")
-    achievementText:SetText("Open Achievement")
+    achievementText:SetText("Achievement")
     achievementText:SetTextColor(textPrimary[1], textPrimary[2], textPrimary[3], 1)
     achievementBtn.text = achievementText
 
-    achievementBtn:SetScript("OnClick", function()
-        local item = previewFrame._currentItem
-        if not item then return end
-
-        local achievementID = item._achievementId
-        if not achievementID and item.itemID then
-            local catalogData = HousingAPI and HousingAPI:GetCatalogData(tonumber(item.itemID))
-            if catalogData then
-                achievementID = catalogData.achievementID
-            end
-        end
-
-        if not achievementID then return end
-
-        if not AchievementFrame then
-            AchievementFrame_LoadUI()
-        end
-        if AchievementFrame then
-            if not AchievementFrame:IsShown() then
-                AchievementFrame_ToggleAchievementFrame()
-            end
-            AchievementFrame_SelectAchievement(achievementID)
-        end
-    end)
+    -- Keep achievement info visible, but do not open Blizzard UI when clicked.
+    achievementBtn:EnableMouse(false)
 
     achievementBtn:SetScript("OnEnter", function(self)
         self:SetBackdropColor(bgHover[1], bgHover[2], bgHover[3], 0.9)
         self:SetBackdropBorderColor(accentPrimary[1], accentPrimary[2], accentPrimary[3], 1)
         GameTooltip:SetOwner(self, "ANCHOR_LEFT")
-        GameTooltip:SetText("Open Achievement", accentPrimary[1], accentPrimary[2], accentPrimary[3])
-        GameTooltip:AddLine("Click to open this achievement in your Achievement panel", 1, 1, 1, true)
+        GameTooltip:SetText("Achievement", accentPrimary[1], accentPrimary[2], accentPrimary[3])
+        GameTooltip:AddLine("Achievement information for this item", 1, 1, 1, true)
         GameTooltip:Show()
     end)
 
@@ -446,7 +421,14 @@ function PreviewPanelUI:CreateModelViewer(previewFrame)
     previewFrame.modelContainer = modelContainer
     previewFrame.toggleModelButton = toggleModelButton
     previewFrame.modelControls = controlsFrame
+    -- Default 3D model to visible (restores prior behavior).
     previewFrame.modelVisible = true
+    modelContainer:SetHeight(150)
+    modelFrame:Show()
+    controlsFrame:Show()
+    if toggleModelButton and toggleModelButton.text then
+        toggleModelButton.text:SetText("Hide 3D")
+    end
 end
 
 function PreviewPanelUI:CreateToggleButton(modelContainer)
@@ -746,7 +728,11 @@ end
 
 function PreviewPanelUI:CreateDetailsPanel(previewFrame)
     local details = CreateFrame("Frame", nil, previewFrame)
-    details:SetPoint("TOP", previewFrame.modelContainer, "BOTTOM", 0, -4)
+    if previewFrame.modelVisible then
+        details:SetPoint("TOP", previewFrame.modelContainer, "BOTTOM", 0, -4)
+    else
+        details:SetPoint("TOP", previewFrame.header, "BOTTOM", 0, -4)
+    end
     details:SetPoint("LEFT", 8, 0)
     details:SetPoint("RIGHT", -8, 0)
     details:SetPoint("BOTTOM", 80, 0)
@@ -945,6 +931,7 @@ function PreviewPanelUI:CreateDetailFields(previewFrame, details)
 
     previewFrame.vendorHeader = Header("Vendor")
     previewFrame.vendorValue, previewFrame.costValue = InlineVendorCost("Vendor:")
+    previewFrame.ahPriceValue = Line(L["BUY_ON_AH_CURRENT_PRICE"] or "Buy on AH (Current Price):")
     previewFrame.factionValue = Line("Faction:")
     previewFrame.reputationValue = InlineReputation("Reputation:")
 
@@ -975,7 +962,6 @@ function PreviewPanelUI:CreateDetailFields(previewFrame, details)
     previewFrame.renownValue = Line("Renown:")
     previewFrame.expansionValue = Line("Expansion:")
     previewFrame.zoneValue = Line("Zone:")
-
     previewFrame.professionHeader = Header("Profession")
     previewFrame.professionValue = Line("Profession:")
     previewFrame.professionSkillValue = Line("Skill:")
@@ -1022,6 +1008,131 @@ function PreviewPanelUI:CreateDetailFields(previewFrame, details)
     previewFrame.apiRecordValue = nil
     previewFrame.apiAssetValue = nil
     previewFrame.apiSourceValue = nil
+
+    function previewFrame:RelayoutProfessionAndRequirements()
+        if not (self.details and self.professionHeader and self.requirementsHeader) then
+            return
+        end
+
+        local function IsShown(f)
+            return f and f.IsShown and f:IsShown()
+        end
+
+        local function LastShown(...)
+            for i = 1, select("#", ...) do
+                local f = select(i, ...)
+                if IsShown(f) then
+                    return f
+                end
+            end
+            return nil
+        end
+
+        local vendorTail = LastShown(
+            self.zoneValue,
+            self.expansionValue,
+            self.renownValue,
+            self.reputationBar,
+            self.reputationValue,
+            self.factionValue,
+            self.ahPriceValue,
+            self.costValue,
+            self.vendorValue
+        )
+        if not vendorTail then
+            return
+        end
+
+        local vendorAnchor = (vendorTail.label and IsShown(vendorTail.label)) and vendorTail.label or vendorTail
+
+        if IsShown(self.professionHeader) then
+            self.professionHeader:ClearAllPoints()
+            self.professionHeader:SetPoint("TOPLEFT", vendorAnchor, "BOTTOMLEFT", -5, -12)
+            if self.professionHeader.divider then
+                self.professionHeader.divider:ClearAllPoints()
+                self.professionHeader.divider:SetPoint("TOPLEFT", self.professionHeader, "BOTTOMLEFT", 0, -2)
+            end
+
+            local lineAnchor = self.professionHeader.divider or self.professionHeader
+            local first = true
+
+            local function PlaceLine(field, extraGap)
+                if not (field and field.label and IsShown(field)) then
+                    return false
+                end
+
+                local yOffset = first and (-10 - (extraGap or 0)) or (-16 - (extraGap or 0))
+                first = false
+
+                field.label:ClearAllPoints()
+                field:ClearAllPoints()
+                field.label:SetPoint("TOPLEFT", lineAnchor, "BOTTOMLEFT", 5, yOffset)
+                field:SetPoint("LEFT", field.label, "RIGHT", 8, 0)
+                field:SetPoint("RIGHT", self.details, "RIGHT", -10, 0)
+                lineAnchor = field.label
+                return true
+            end
+
+            PlaceLine(self.professionValue, 0)
+            PlaceLine(self.professionSkillValue, 0)
+            PlaceLine(self.professionRecipeValue, 0)
+
+            -- Keep reagents aligned to the profession header (right column).
+            if self.reagentsContainer and self.reagentsContainer.IsShown and self.reagentsContainer:IsShown() and self.professionHeader.GetTop and self.details.GetTop then
+                self.reagentsContainer:ClearAllPoints()
+                self.reagentsContainer:SetPoint(
+                    "TOPRIGHT",
+                    self.details,
+                    "TOPRIGHT",
+                    -10,
+                    (self.professionHeader:GetTop() - self.details:GetTop())
+                )
+            end
+        end
+
+        local professionTail = LastShown(self.professionRecipeValue, self.professionSkillValue, self.professionValue, self.professionHeader)
+        local professionAnchor = (professionTail and professionTail.label and IsShown(professionTail.label)) and professionTail.label or professionTail
+        local requirementsBaseAnchor = professionAnchor or vendorAnchor
+
+        if IsShown(self.requirementsHeader) and requirementsBaseAnchor then
+            self.requirementsHeader:ClearAllPoints()
+            self.requirementsHeader:SetPoint("TOPLEFT", requirementsBaseAnchor, "BOTTOMLEFT", -5, -12)
+            if self.requirementsHeader.divider then
+                self.requirementsHeader.divider:ClearAllPoints()
+                self.requirementsHeader.divider:SetPoint("TOPLEFT", self.requirementsHeader, "BOTTOMLEFT", 0, -2)
+            end
+
+            local reqAnchor = self.requirementsHeader.divider or self.requirementsHeader
+            local reqFirst = true
+
+            local function PlaceReq(field)
+                if not (field and field.label and IsShown(field)) then
+                    return false
+                end
+
+                local yOffset = reqFirst and -10 or -20
+                reqFirst = false
+
+                field.label:ClearAllPoints()
+                field:ClearAllPoints()
+                field.label:SetPoint("TOPLEFT", reqAnchor, "BOTTOMLEFT", 5, yOffset)
+                field:SetPoint("LEFT", field.label, "RIGHT", 8, 0)
+                field:SetPoint("RIGHT", self.details, "RIGHT", -10, 0)
+                reqAnchor = field.label
+                return true
+            end
+
+            PlaceReq(self.questValue)
+            PlaceReq(self.achievementValue)
+
+            if self.achievementBar and self.achievementBar.IsShown and self.achievementBar:IsShown() then
+                local yOffset = reqFirst and -10 or -16
+                self.achievementBar:ClearAllPoints()
+                self.achievementBar:SetPoint("TOPLEFT", reqAnchor, "BOTTOMLEFT", 5, yOffset)
+            end
+        end
+    end
+
 end
 
 function PreviewPanelUI:CreateMapButton(previewFrame)
@@ -1039,6 +1150,24 @@ function PreviewPanelUI:CreateMapButton(previewFrame)
     mapBtn:SetScript("OnClick", function()
         if previewFrame._vendorInfo and HousingWaypointManager then
             HousingWaypointManager:SetWaypoint(previewFrame._vendorInfo)
+
+            -- Show vendor marker UI if enabled
+            if HousingDB and HousingDB.settings and HousingDB.settings.enableVendorMarker then
+                if HousingVendorMarker and previewFrame._vendorInfo.npcID then
+                    local vendorName = previewFrame._vendorInfo.vendorName or previewFrame._vendorInfo.name or "Vendor"
+                    local npcID = previewFrame._vendorInfo.npcID
+
+                    -- Only show if NPC ID is valid (not "None" or empty)
+                    if npcID and npcID ~= "None" and npcID ~= "" and tonumber(npcID) then
+                        local coords = {
+                            x = previewFrame._vendorInfo.coords and previewFrame._vendorInfo.coords.x or previewFrame._vendorInfo.x,
+                            y = previewFrame._vendorInfo.coords and previewFrame._vendorInfo.coords.y or previewFrame._vendorInfo.y,
+                            mapID = previewFrame._vendorInfo.mapID
+                        }
+                        HousingVendorMarker:ShowForVendor(vendorName, npcID, coords)
+                    end
+                end
+            end
         end
     end)
 

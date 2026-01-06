@@ -312,14 +312,20 @@ end
 local housingCatalogPrimed = false
 
 local function PrimeHousingCatalog()
+    -- TAINT FIX: Only prime catalog after safe delay period
+    -- Uses global flag _G.HousingCatalogSafeToCall set by CollectionAPI
+    if not _G.HousingCatalogSafeToCall then
+        return
+    end
+
     if housingCatalogPrimed or not C_HousingCatalog then
         return
     end
-    
+
     if C_HousingCatalog.CreateCatalogSearcher then
         pcall(C_HousingCatalog.CreateCatalogSearcher)
     end
-    
+
     housingCatalogPrimed = true
 end
 
@@ -348,14 +354,19 @@ function HVRep.IsItemCollected(itemID)
     if purchasedItems[itemID] then
         return true, nil
     end
-    
+
+    -- TAINT FIX: Don't call Housing APIs before safe delay period
+    if not _G.HousingCatalogSafeToCall then
+        return nil, nil
+    end
+
     -- Query housing catalog
     if not C_HousingCatalog or not C_HousingCatalog.GetCatalogEntryInfoByItem then
         return nil, nil
     end
-    
+
     PrimeHousingCatalog()
-    
+
     local ok, state = pcall(C_HousingCatalog.GetCatalogEntryInfoByItem, itemID, true)
     if not ok or not state then
         return nil, nil

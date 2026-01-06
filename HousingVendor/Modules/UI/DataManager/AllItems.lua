@@ -48,6 +48,11 @@ local function InferFactionFromText(text) return Util.InferFactionFromText and U
 -- API-only vendor mode - static VendorLocations enrichment disabled for accuracy with new content
 local USE_STATIC_VENDOR_LOCATIONS = false
 
+-- PERFORMANCE: Incremental item loading option (prevents UI freeze on first load)
+-- Set to true to load items in batches with yields, false for synchronous loading
+local ENABLE_INCREMENTAL_LOADING = true
+local INCREMENTAL_BATCH_SIZE = 300  -- Process 300 items per batch
+
 -- Aggregate all items from HousingAllItems and enrich with API
 function DataManager:GetAllItems()
     -- Return cached data if available
@@ -84,10 +89,21 @@ function DataManager:GetAllItems()
         requirements = {}
     }
 
-    -- Build a fast lookup table for vendor location data once (prevents huge nested scans per item)
+    -- PERFORMANCE OPTIMIZATION: Use pre-built vendor index (O(1) lookup instead of O(n²) nested loops)
+    -- The index is built once in VendorIndex.lua and cached, not rebuilt every time GetAllItems() is called
     local vendorItemIndex = nil
     local itemVendorLookup = nil
-    if USE_STATIC_VENDOR_LOCATIONS and HousingVendorLocations then
+
+    -- Check if HousingVendorIndex is available (from VendorIndex.lua in DataPack)
+    if USE_STATIC_VENDOR_LOCATIONS and _G.HousingVendorIndex then
+        -- Force build if not already built (lazy initialization)
+        if not _G.HousingVendorIndex.IsBuilt() then
+            _G.HousingVendorIndex.Rebuild()
+        end
+        -- Note: vendorItemIndex will be populated from HousingVendorIndex.Get() during item loop
+        vendorItemIndex = {}
+    elseif USE_STATIC_VENDOR_LOCATIONS and HousingVendorLocations then
+        -- FALLBACK: Old method if VendorIndex.lua not available
         vendorItemIndex = {}
 
         local expansions = {"Classic", "The Burning Crusade", "Wrath of the Lich King", "Cataclysm",
@@ -521,6 +537,28 @@ function DataManager:GetAllItems()
                 if _G["HousingExpansionData"] then
                     local expData = _G["HousingExpansionData"][itemIDNum]
                     if expData then
+                        local staticName = nil
+                        if expData.vendor and expData.vendor.itemName and expData.vendor.itemName ~= "" then
+                            staticName = expData.vendor.itemName
+                        elseif expData.quest then
+                            local q = expData.quest[1] or expData.quest
+                            staticName = (q and (q.itemName or q.title or q.name)) or nil
+                        elseif expData.achievement then
+                            local a = expData.achievement[1] or expData.achievement
+                            staticName = (a and (a.title or a.itemName or a.name)) or nil
+                        elseif expData.drop then
+                            local d = expData.drop[1] or expData.drop
+                            staticName = (d and (d.itemName or d.title or d.name)) or nil
+                        end
+
+                        if staticName and staticName ~= "" then
+                            itemRecord._searchName = staticName
+                        end
+
+                        if itemRecord.name == "Unknown Item" and staticName and staticName ~= "" then
+                            itemRecord.name = staticName
+                        end
+
                         -- Process each source type
                         if expData.reputation then
                             itemRecord._sourceType = INTERNED_STRINGS["Reputation"]
@@ -562,15 +600,29 @@ function DataManager:GetAllItems()
                                     itemRecord.vendorName = vd.vendorName
                                     filterOptions.vendors[vd.vendorName] = true
                                 end
-                                if vd.location then
-                                    itemRecord.zoneName = vd.location
-                                    filterOptions.zones[vd.location] = true
-                                end
                                 if vd.coords then
                                     itemRecord.coords = { x = vd.coords.x, y = vd.coords.y, mapID = vd.coords.mapID }
                                     if vd.coords.mapID then
                                         itemRecord.mapID = vd.coords.mapID
+
+                                        -- LOCALIZATION FIX: Get localized zone name from mapID instead of hardcoded English string
+                                        -- This ensures zone names display in the player's client language
+                                        local localizedZoneName = vd.location -- Fallback to English if API fails
+                                        if C_Map and C_Map.GetMapInfo then
+                                            local success, mapInfo = pcall(function()
+                                                return C_Map.GetMapInfo(vd.coords.mapID)
+                                            end)
+                                            if success and mapInfo and mapInfo.name then
+                                                localizedZoneName = mapInfo.name
+                                            end
+                                        end
+                                        itemRecord.zoneName = localizedZoneName
+                                        filterOptions.zones[localizedZoneName] = true
                                     end
+                                elseif vd.location then
+                                    -- Fallback if no mapID available (use English name)
+                                    itemRecord.zoneName = vd.location
+                                    filterOptions.zones[vd.location] = true
                                 end
                                 if vd.npcID and vd.npcID ~= "None" then
                                     itemRecord.npcID = vd.npcID
@@ -695,6 +747,11 @@ function DataManager:GetAllItems()
                                 if firstAch.expansion then
                                     itemRecord.expansionName = firstAch.expansion
                                     filterOptions.expansions[firstAch.expansion] = true
+                                end
+                                if firstAch.category then
+                                    itemRecord._apiSubcategory = firstAch.category
+                                    filterOptions.types[firstAch.category] = true
+                                    filterOptions.categories[firstAch.category] = true
                                 end
                                 if firstAch.faction then
                                     local factionStr = FactionNumericToString(firstAch.faction)
@@ -831,8 +888,10 @@ function DataManager:GetAllItems()
                         end
 
                         if missingData.quality then
+                            -- CRITICAL: Store quality as NUMBER (not string) for consistent filtering
+                            -- Filtering.lua expects _apiQuality to be a number (0-5) to look up in qualityNames table
+                            itemRecord._apiQuality = missingData.quality
                             local qualityName = QUALITY_NAMES[missingData.quality] or "Common"
-                            itemRecord._apiQuality = qualityName
                             filterOptions.qualities[qualityName] = true
                         end
 

@@ -1,9 +1,60 @@
 ﻿-- OutstandingItems Sub-module: Popup rendering
--- Part of HousingOutstandingItemsUI
 
 local _G = _G
 local OutstandingItemsUI = _G["HousingOutstandingItemsUI"]
 if not OutstandingItemsUI then return end
+
+local GameTooltip = GameTooltip
+local ipairs = ipairs
+local pairs = pairs
+local tonumber = tonumber
+local tostring = tostring
+local string_format = string.format
+
+local function CreatePopupItemRow(parent, x, y, width, height)
+    local row = CreateFrame("Button", nil, parent, "BackdropTemplate")
+    row:SetPoint("TOPLEFT", x, y)
+    row:SetSize(width, height)
+    row:SetBackdrop({
+        bgFile = "Interface\\Buttons\\WHITE8x8",
+        edgeFile = "Interface\\Buttons\\WHITE8x8",
+        tile = false,
+        edgeSize = 1,
+        insets = { left = 0, right = 0, top = 0, bottom = 0 },
+    })
+    row:SetBackdropColor(0, 0, 0, 0)
+    row:SetBackdropBorderColor(0, 0, 0, 0)
+    row.originalBackdropColor = { 0, 0, 0, 0 }
+    return row
+end
+
+local function AttachFullItemTooltip(row, item)
+    if not row then return end
+    row.itemData = item
+
+    local tooltip = _G.HousingVendorItemListTooltip
+    if tooltip and tooltip.AttachButton then
+        tooltip.AttachButton(row, { noHoverSkin = true })
+        return
+    end
+
+    -- Minimal fallback if the shared tooltip module isn't available yet.
+    row:SetScript("OnEnter", function(btn)
+        if not item then return end
+        if not GameTooltip then return end
+        GameTooltip:SetOwner(btn, "ANCHOR_RIGHT")
+        GameTooltip:ClearLines()
+        GameTooltip:SetText(item.name or "Item", 1, 1, 1, 1, true)
+        local itemID = item.itemID and tonumber(item.itemID) or nil
+        if itemID and GameTooltip.SetItemByID then
+            GameTooltip:SetItemByID(itemID)
+        end
+        GameTooltip:Show()
+    end)
+    row:SetScript("OnLeave", function()
+        if GameTooltip then GameTooltip:Hide() end
+    end)
+end
 
 function OutstandingItemsUI:ApplyPopupTheme(frame)
     if not frame then return end
@@ -63,18 +114,19 @@ function OutstandingItemsUI:ShowPopup(zoneName, outstanding)
     
     frame.zoneName:SetText(zoneName)
     
-    -- Store zone name for View All button
     frame._currentZone = zoneName
     
-    -- Clear existing content
     for _, child in ipairs({frame.content:GetChildren()}) do
         child:Hide()
         child:SetParent(nil)
     end
+    for _, region in ipairs({frame.content:GetRegions()}) do
+        region:Hide()
+        region:SetParent(nil)
+    end
     
     local yOffset = -5
     
-    -- Summary
     local summary = frame.content:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     summary:SetPoint("TOPLEFT", 5, yOffset)
     summary:SetText(string.format("%d Uncollected Items", outstanding.total))
@@ -104,13 +156,36 @@ function OutstandingItemsUI:ShowPopup(zoneName, outstanding)
         end
  		yOffset = yOffset - 20
         
-        for vendorName, vendorData in pairs(outstanding.vendors) do
+        for vendorKey, vendorData in pairs(outstanding.vendors) do
             -- Get first item to extract coordinates and map data
             local firstItem = vendorData.items and vendorData.items[1]
 
             local hasValidCoords = false
             local waypointItem = nil
-            if firstItem and firstItem.coords and firstItem.coords.x and firstItem.coords.y then
+            local vendorCoords = vendorData and vendorData.coords or nil
+            local vendorMapID = vendorData and vendorData.mapID or nil
+            local vendorName = vendorData and (vendorData.baseName or vendorData.name) or nil
+            local vendorDisplayName = vendorData and vendorData.name or vendorName or vendorKey
+
+            if vendorCoords and vendorCoords.x and vendorCoords.y and vendorMapID and vendorMapID ~= 0 then
+                hasValidCoords = true
+                local itemZoneName = nil
+                if _G.HousingVendorHelper then
+                    itemZoneName = _G.HousingVendorHelper:GetZoneName(firstItem, nil, nil, vendorMapID)
+                else
+                    itemZoneName = firstItem and (firstItem._apiZone or firstItem.zoneName) or nil
+                end
+
+                waypointItem = {
+                    vendorName = vendorName or vendorDisplayName,
+                    zoneName = itemZoneName or zoneName,
+                    expansionName = firstItem and firstItem.expansionName or nil,
+                    coords = { x = vendorCoords.x, y = vendorCoords.y },
+                    mapID = vendorMapID,
+                    npcID = vendorData and vendorData.npcID or (firstItem and firstItem.npcID) or nil,
+                    name = firstItem and firstItem.name or nil,
+                }
+            elseif firstItem and firstItem.coords and firstItem.coords.x and firstItem.coords.y then
                 local mapID = firstItem.mapID or (firstItem.coords and firstItem.coords.mapID)
                 if mapID and mapID ~= 0 then
                     hasValidCoords = true
@@ -123,11 +198,13 @@ function OutstandingItemsUI:ShowPopup(zoneName, outstanding)
                     end
 
                     waypointItem = {
-                        vendorName = vendorName,
+                        vendorName = vendorName or vendorDisplayName,
                         zoneName = itemZoneName or zoneName,
                         expansionName = firstItem.expansionName,
                         coords = { x = firstItem.coords.x, y = firstItem.coords.y },
                         mapID = mapID,
+                        npcID = firstItem.npcID or (vendorData and vendorData.npcID) or nil,
+                        name = firstItem.name,
                     }
                 end
             end
@@ -192,10 +269,33 @@ function OutstandingItemsUI:ShowPopup(zoneName, outstanding)
 				end
 			end
 
-			-- Build vendor text
-			local vendorTextStr = string.format("%s (%d item%s)", vendorName, #vendorData.items, #vendorData.items > 1 and "s" or "")
+			-- Build vendor text - show actual uncollected count vs total
+			local uncollectedCount = 0
+			local totalCount = #vendorData.items
+			for _, item in ipairs(vendorData.items) do
+				local isCollected = false
+				if item.itemID and HousingCollectionAPI then
+					local itemIDNum = tonumber(item.itemID)
+					if itemIDNum then
+						isCollected = HousingCollectionAPI:IsItemCollected(itemIDNum)
+					end
+				end
+				if not isCollected then
+					uncollectedCount = uncollectedCount + 1
+				end
+			end
+
+			local vendorTextStr
+			if uncollectedCount < totalCount then
+				-- Some items are collected, show both counts
+				vendorTextStr = string.format("%s (%d/%d uncollected)", vendorDisplayName, uncollectedCount, totalCount)
+			else
+				-- All items uncollected, show simple count
+				vendorTextStr = string.format("%s (%d item%s)", vendorDisplayName, totalCount, totalCount > 1 and "s" or "")
+			end
+
 			if repStatus and not repProgress then
-				vendorTextStr = vendorTextStr .. "\n  " .. repStatus
+				vendorTextStr = vendorTextStr .. "\n     " .. repStatus
 			end
 
 			local inlineRepBarCreated = false
@@ -218,7 +318,7 @@ function OutstandingItemsUI:ShowPopup(zoneName, outstanding)
                 vendorTextFrame:SetPoint("TOPLEFT", 32, yOffset)
 
 	                -- Calculate height based on whether reputation is shown
-	                local rowHeight = repProgress and ((repLabel and repLabel ~= "") and 48 or 34) or (repStatus and 36 or 18)
+	                local rowHeight = repProgress and ((repLabel and repLabel ~= "") and 52 or 38) or (repStatus and 40 or 22)
 	                vendorTextFrame:SetSize(305, rowHeight)
 
 	                local vendorText = vendorTextFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
@@ -231,6 +331,8 @@ function OutstandingItemsUI:ShowPopup(zoneName, outstanding)
 	                end
 	                vendorText:SetJustifyH("LEFT")
 	                vendorText:SetJustifyV("TOP")
+	                vendorText:SetWordWrap(true)
+	                vendorText:SetSpacing(2)
 	                vendorText:SetText(vendorTextStr)
 	                vendorTextFrame.textString = vendorText
 
@@ -279,191 +381,30 @@ function OutstandingItemsUI:ShowPopup(zoneName, outstanding)
 		                    inlineRepBarCreated = true
 		                end
 
-                -- Add tooltip showing vendor details
-                vendorTextFrame:SetScript("OnEnter", function(btn)
-                    GameTooltip:SetOwner(btn, "ANCHOR_RIGHT")
-                    GameTooltip:ClearLines()
-
-                    -- Increase font size
-                    local tooltipFont = GameTooltipText:GetFont()
-                    GameTooltipText:SetFont(tooltipFont or "Fonts\\FRIZQT__.TTF", 14, "OUTLINE")
-
-                    GameTooltip:SetText(vendorName, 1, 0.82, 0, 1, true)
-
-                    -- Show zone info using VendorHelper
-                    if firstItem then
-                        local itemZoneName = nil
-                        if _G.HousingVendorHelper then
-                            itemZoneName = _G.HousingVendorHelper:GetZoneName(firstItem, nil)
-                        else
-                            itemZoneName = firstItem._apiZone or firstItem.zoneName
-                        end
-                        if itemZoneName then
-                            GameTooltip:AddLine("Zone: " .. itemZoneName, 0.8, 0.8, 0.8, 1)
-                        end
-                    end
-
-                    -- Show reputation requirement + progress
-                    if firstItem and (firstItem.reputationRequired or repLabel) then
-                        local repText = repLabel or firstItem.reputationRequired
-                        if not repLabel then
-                            local factionName = firstItem.factionName or ""
-                            if factionName ~= "" then
-                                repText = factionName .. " - " .. repText
-                            end
-                        end
-
-                        GameTooltip:AddLine(" ", 1, 1, 1, 1) -- Spacer
-                        GameTooltip:AddLine("Reputation: " .. repText, 0.9, 0.7, 0.3, 1)
-
-                        -- Calculate progress
-                        local repProgress = nil
-                        local repLookup = nil
-                        local cfg = nil
-                        local bestRec = nil
-                        local bestCharKey = nil
-                        local requiredStanding = nil
-                        if repItemID and HousingReputation and HousingVendorItemToFaction and HousingReputations then
-                            local numericItemID = tonumber(repItemID)
-                            if numericItemID then
-                                if HousingReputation.SnapshotReputation then
-                                    pcall(HousingReputation.SnapshotReputation)
-                                end
-
-                                repLookup = HousingVendorItemToFaction[numericItemID]
-                                if repLookup then
-                                    cfg = HousingReputations[repLookup.factionID]
-                                    if cfg then
-                                        bestRec, bestCharKey = HousingReputation.GetBestRepRecord(repLookup.factionID)
-                                        if bestRec then
-                                            local isUnlocked = HousingReputation.IsItemUnlocked(numericItemID)
-                                            requiredStanding = repLookup.requiredStanding
-
-                                            if isUnlocked then
-                                                repProgress = { current = 1, max = 1, text = "Requirement Met", met = true }
-                                            elseif cfg.rep == "renown" then
-                                                local requiredRenown = tonumber(requiredStanding:match("Renown%s+(%d+)")) or 0
-                                                repProgress = {
-                                                    current = bestRec.renownLevel or 0,
-                                                    max = requiredRenown,
-                                                    text = string.format("%d / %d Renown", bestRec.renownLevel or 0, requiredRenown),
-                                                    met = false
-                                                }
-                                            elseif cfg.rep == "standard" then
-                                                local reactionNames = {"Hated", "Hostile", "Unfriendly", "Neutral", "Friendly", "Honored", "Revered", "Exalted"}
-                                                local requiredReaction = 0
-                                                for i, name in ipairs(reactionNames) do
-                                                    if name == requiredStanding then
-                                                        requiredReaction = i
-                                                        break
-                                                    end
-                                                end
-
-                                                if requiredReaction > 0 and bestRec.reaction then
-                                                    repProgress = {
-                                                        current = bestRec.reaction or 0,
-                                                        max = requiredReaction,
-                                                        text = string.format("%s / %s", reactionNames[bestRec.reaction] or "Unknown", requiredStanding),
-                                                        met = false
-                                                    }
-                                                end
-                                            end
-                                        end
-                                    end
-                                end
-                            end
-                        end
-
-                        -- Display progress info
-                        if repProgress and repProgress.max > 0 then
-                            local progress = math.min(repProgress.current / repProgress.max, 1)
-
-                            local r, g, b
-                            if repProgress.met or progress >= 1 then
-                                r, g, b = 0, 1, 0 -- Green
-                            elseif progress >= 0.5 then
-                                r, g, b = 0, 0.75, 1 -- Blue
-                            else
-                                r, g, b = 1, 0.25, 0.25 -- Red
-                            end
-
-                            -- Show progress as text with percentage
-                            local progressLine = string.format("%s - %.0f%%", repProgress.text, progress * 100)
-                            GameTooltip:AddLine(progressLine, r, g, b, 1)
-                        end
-
-                        -- Extra details (faction + current/required + best character)
-                        if cfg and bestRec and requiredStanding and requiredStanding ~= "" then
-                            if cfg.rep == "renown" then
-                                local current = bestRec.renownLevel or 0
-                                local requiredRenown = tonumber(tostring(requiredStanding):match("Renown%s+(%d+)")) or 0
-                                GameTooltip:AddLine(string.format("Current: Renown %d", current), 0.5, 0.8, 1, 1)
-                                if requiredRenown > 0 then
-                                    GameTooltip:AddLine(string.format("Required: Renown %d", requiredRenown), 1, 1, 0.5, 1)
-                                end
-                            elseif cfg.rep == "standard" then
-                                local reactionNames = { "Hated", "Hostile", "Unfriendly", "Neutral", "Friendly", "Honored", "Revered", "Exalted" }
-                                GameTooltip:AddLine(string.format("Current: %s", reactionNames[bestRec.reaction] or "Unknown"), 0.5, 0.8, 1, 1)
-                                GameTooltip:AddLine(string.format("Required: %s", requiredStanding), 1, 1, 0.5, 1)
-                            elseif cfg.rep == "friendship" then
-                                GameTooltip:AddLine(string.format("Current: %s", bestRec.reactionText or "Unknown"), 0.5, 0.8, 1, 1)
-                                GameTooltip:AddLine(string.format("Required: %s", requiredStanding), 1, 1, 0.5, 1)
-                            end
-
-                            if bestCharKey then
-                                GameTooltip:AddLine(" ", 1, 1, 1, 1)
-                                GameTooltip:AddLine("Best progress on: " .. bestCharKey, 0.7, 0.7, 0.7, 1)
-                            end
-                        end
-                    end
-
-                    -- Show uncollected items from this vendor
-                    GameTooltip:AddLine(" ", 1, 1, 1, 1) -- Spacer
-                    GameTooltip:AddLine("Uncollected items from " .. vendorName .. ":", 0.4, 0.8, 1, 1)
-
-                    local uncollectedItems = {}
-                    for _, item in ipairs(vendorData.items) do
-                        -- Check if item is uncollected
-                        local isCollected = false
-                        if item.itemID and HousingCollectionAPI then
-                            local itemIDNum = tonumber(item.itemID)
-                            if itemIDNum then
-                                isCollected = HousingCollectionAPI:IsItemCollected(itemIDNum)
-                            end
-                        end
-                        if not isCollected then
-                            table.insert(uncollectedItems, item)
-                        end
-                    end
-
-                    local maxItems = math.min(10, #uncollectedItems)
-                    for i = 1, maxItems do
-                        local item = uncollectedItems[i]
-                        local itemNameShort = item.name or "Unknown"
-                        if #itemNameShort > 35 then
-                            itemNameShort = itemNameShort:sub(1, 32) .. "..."
-                        end
-                        GameTooltip:AddLine("  " .. itemNameShort, 0.9, 0.9, 0.9, 1)
-                    end
-
-                    if #uncollectedItems > maxItems then
-                        GameTooltip:AddLine(string.format("|cFF808080...and %d more uncollected items|r", #uncollectedItems - maxItems), 0.6, 0.6, 0.6, 1)
-                    elseif #uncollectedItems == 0 then
-                        GameTooltip:AddLine("|cFF00FF00  All items collected!|r", 0.6, 1, 0.6, 1)
-                    end
-
-                    GameTooltip:Show()
-                end)
-                vendorTextFrame:SetScript("OnLeave", function()
-                    -- Restore tooltip font
-                    local tooltipFont = GameTooltipText:GetFont()
-                    GameTooltipText:SetFont(tooltipFont or "Fonts\\FRIZQT__.TTF", 12, "")
-                    GameTooltip:Hide()
-                end)
+                -- TAINT FIX: Removed complex tooltip to prevent taint issues
+                -- Tooltips can cause taint when shown during protected UI operations (ESC key)
 
                 -- Button click handler - navigate to vendor
                 mapBtn:SetScript("OnClick", function()
                     HousingWaypointManager:SetWaypoint(waypointItem)
+
+                    -- Show vendor marker UI if enabled
+                    if HousingDB and HousingDB.settings and HousingDB.settings.enableVendorMarker then
+                        if HousingVendorMarker and waypointItem.npcID then
+                            local vendorName = waypointItem.vendorName or waypointItem.name or "Vendor"
+                            local npcID = waypointItem.npcID
+
+                            -- Only show if NPC ID is valid (not "None" or empty)
+                            if npcID and npcID ~= "None" and npcID ~= "" and tonumber(npcID) then
+                                local coords = {
+                                    x = waypointItem.x,
+                                    y = waypointItem.y,
+                                    mapID = waypointItem.mapID
+                                }
+                                HousingVendorMarker:ShowForVendor(vendorName, npcID, coords)
+                            end
+                        end
+                    end
                 end)
 
                 -- Hover effects
@@ -483,7 +424,7 @@ function OutstandingItemsUI:ShowPopup(zoneName, outstanding)
                 local vendorTextFrame = CreateFrame("Button", nil, frame.content)
                 vendorTextFrame:SetPoint("TOPLEFT", 15, yOffset)
 
-                local rowHeight = repProgress and ((repLabel and repLabel ~= "") and 48 or 34) or (repStatus and 36 or 18)
+                local rowHeight = repProgress and ((repLabel and repLabel ~= "") and 52 or 38) or (repStatus and 40 or 22)
                 vendorTextFrame:SetSize(320, rowHeight)
 
                 local vendorText = vendorTextFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
@@ -491,186 +432,17 @@ function OutstandingItemsUI:ShowPopup(zoneName, outstanding)
                 vendorText:SetWidth(320)
                 vendorText:SetJustifyH("LEFT")
                 vendorText:SetJustifyV("TOP")
+                vendorText:SetWordWrap(true)
+                vendorText:SetSpacing(2)
                 if repProgress and repLabel and repLabel ~= "" then
-                    vendorText:SetText(string.format("  - %s\n  %s", vendorTextStr, repLabel))
+                    vendorText:SetText(string.format("  - %s\n     %s", vendorTextStr, repLabel))
                 else
                     vendorText:SetText(string.format("  - %s", vendorTextStr))
                 end
                 vendorTextFrame.textString = vendorText
 
-                vendorTextFrame:SetScript("OnEnter", function(btn)
-                    GameTooltip:SetOwner(btn, "ANCHOR_RIGHT")
-                    GameTooltip:ClearLines()
-
-                    local tooltipFont = GameTooltipText:GetFont()
-                    GameTooltipText:SetFont(tooltipFont or "Fonts\\FRIZQT__.TTF", 14, "OUTLINE")
-
-                    GameTooltip:SetText(vendorName, 1, 0.82, 0, 1, true)
-
-                    -- Show zone info using VendorHelper
-                    if firstItem then
-                        local itemZoneName = nil
-                        if _G.HousingVendorHelper then
-                            itemZoneName = _G.HousingVendorHelper:GetZoneName(firstItem, nil)
-                        else
-                            itemZoneName = firstItem._apiZone or firstItem.zoneName
-                        end
-                        if itemZoneName then
-                            GameTooltip:AddLine("Zone: " .. itemZoneName, 0.8, 0.8, 0.8, 1)
-                        end
-                    end
-
-                    if firstItem and (firstItem.reputationRequired or repLabel) then
-                        local repText = repLabel or firstItem.reputationRequired
-                        if not repLabel then
-                            local factionName = firstItem.factionName or ""
-                            if factionName ~= "" then
-                                repText = factionName .. " - " .. repText
-                            end
-                        end
-
-                        GameTooltip:AddLine(" ", 1, 1, 1, 1)
-                        GameTooltip:AddLine("Reputation: " .. repText, 0.9, 0.7, 0.3, 1)
-
-                        local repProgress = nil
-                        local repLookup = nil
-                        local cfg = nil
-                        local bestRec = nil
-                        local bestCharKey = nil
-                        local requiredStanding = nil
-
-                        if repItemID and HousingReputation and HousingVendorItemToFaction and HousingReputations then
-                            local numericItemID = tonumber(repItemID)
-                            if numericItemID then
-                                if HousingReputation.SnapshotReputation then
-                                    pcall(HousingReputation.SnapshotReputation)
-                                end
-
-                                repLookup = HousingVendorItemToFaction[numericItemID]
-                                if repLookup then
-                                    cfg = HousingReputations[repLookup.factionID]
-                                    if cfg then
-                                        bestRec, bestCharKey = HousingReputation.GetBestRepRecord(repLookup.factionID)
-                                        if bestRec then
-                                            local isUnlocked = HousingReputation.IsItemUnlocked(numericItemID)
-                                            requiredStanding = repLookup.requiredStanding
-
-                                            if isUnlocked then
-                                                repProgress = { current = 1, max = 1, text = "Requirement Met", met = true }
-                                            elseif cfg.rep == "renown" then
-                                                local requiredRenown = tonumber(tostring(requiredStanding):match("Renown%s+(%d+)")) or 0
-                                                repProgress = {
-                                                    current = bestRec.renownLevel or 0,
-                                                    max = requiredRenown,
-                                                    text = string.format("%d / %d Renown", bestRec.renownLevel or 0, requiredRenown),
-                                                    met = false
-                                                }
-                                            elseif cfg.rep == "standard" then
-                                                local reactionNames = { "Hated", "Hostile", "Unfriendly", "Neutral", "Friendly", "Honored", "Revered", "Exalted" }
-                                                local requiredReaction = 0
-                                                for i, name in ipairs(reactionNames) do
-                                                    if name == requiredStanding then
-                                                        requiredReaction = i
-                                                        break
-                                                    end
-                                                end
-
-                                                if requiredReaction > 0 and bestRec.reaction then
-                                                    repProgress = {
-                                                        current = bestRec.reaction or 0,
-                                                        max = requiredReaction,
-                                                        text = string.format("%s / %s", reactionNames[bestRec.reaction] or "Unknown", requiredStanding),
-                                                        met = false
-                                                    }
-                                                end
-                                            end
-                                        end
-                                    end
-                                end
-                            end
-                        end
-
-                        if repProgress and repProgress.max > 0 then
-                            local progress = math.min(repProgress.current / repProgress.max, 1)
-
-                            local r, g, b
-                            if repProgress.met or progress >= 1 then
-                                r, g, b = 0, 1, 0
-                            elseif progress >= 0.5 then
-                                r, g, b = 0, 0.75, 1
-                            else
-                                r, g, b = 1, 0.25, 0.25
-                            end
-
-                            local progressLine = string.format("%s - %.0f%%", repProgress.text, progress * 100)
-                            GameTooltip:AddLine(progressLine, r, g, b, 1)
-                        end
-
-                        if cfg and bestRec and requiredStanding and requiredStanding ~= "" then
-                            if cfg.rep == "renown" then
-                                local current = bestRec.renownLevel or 0
-                                local requiredRenown = tonumber(tostring(requiredStanding):match("Renown%s+(%d+)")) or 0
-                                GameTooltip:AddLine(string.format("Current: Renown %d", current), 0.5, 0.8, 1, 1)
-                                if requiredRenown > 0 then
-                                    GameTooltip:AddLine(string.format("Required: Renown %d", requiredRenown), 1, 1, 0.5, 1)
-                                end
-                            elseif cfg.rep == "standard" then
-                                local reactionNames = { "Hated", "Hostile", "Unfriendly", "Neutral", "Friendly", "Honored", "Revered", "Exalted" }
-                                GameTooltip:AddLine(string.format("Current: %s", reactionNames[bestRec.reaction] or "Unknown"), 0.5, 0.8, 1, 1)
-                                GameTooltip:AddLine(string.format("Required: %s", requiredStanding), 1, 1, 0.5, 1)
-                            elseif cfg.rep == "friendship" then
-                                GameTooltip:AddLine(string.format("Current: %s", bestRec.reactionText or "Unknown"), 0.5, 0.8, 1, 1)
-                                GameTooltip:AddLine(string.format("Required: %s", requiredStanding), 1, 1, 0.5, 1)
-                            end
-
-                            if bestCharKey then
-                                GameTooltip:AddLine(" ", 1, 1, 1, 1)
-                                GameTooltip:AddLine("Best progress on: " .. bestCharKey, 0.7, 0.7, 0.7, 1)
-                            end
-                        end
-                    end
-
-                    GameTooltip:AddLine(" ", 1, 1, 1, 1)
-                    GameTooltip:AddLine("Uncollected items from " .. vendorName .. ":", 0.4, 0.8, 1, 1)
-
-                    local uncollectedItems = {}
-                    for _, item in ipairs(vendorData.items) do
-                        local isCollected = false
-                        if item.itemID and HousingCollectionAPI then
-                            local itemIDNum = tonumber(item.itemID)
-                            if itemIDNum then
-                                isCollected = HousingCollectionAPI:IsItemCollected(itemIDNum)
-                            end
-                        end
-                        if not isCollected then
-                            table.insert(uncollectedItems, item)
-                        end
-                    end
-
-                    local maxItems = math.min(10, #uncollectedItems)
-                    for i = 1, maxItems do
-                        local item = uncollectedItems[i]
-                        local itemNameShort = item.name or "Unknown"
-                        if #itemNameShort > 35 then
-                            itemNameShort = itemNameShort:sub(1, 32) .. "..."
-                        end
-                        GameTooltip:AddLine("  " .. itemNameShort, 0.9, 0.9, 0.9, 1)
-                    end
-
-                    if #uncollectedItems > maxItems then
-                        GameTooltip:AddLine(string.format("|cFF808080...and %d more uncollected items|r", #uncollectedItems - maxItems), 0.6, 0.6, 0.6, 1)
-                    elseif #uncollectedItems == 0 then
-                        GameTooltip:AddLine("|cFF00FF00  All items collected!|r", 0.6, 1, 0.6, 1)
-                    end
-
-                    GameTooltip:Show()
-                end)
-
-                vendorTextFrame:SetScript("OnLeave", function()
-                    local tooltipFont = GameTooltipText:GetFont()
-                    GameTooltipText:SetFont(tooltipFont or "Fonts\\FRIZQT__.TTF", 12, "")
-                    GameTooltip:Hide()
-                end)
+                -- TAINT FIX: Removed complex tooltip to prevent taint issues
+                -- Tooltips can cause taint when shown during protected UI operations (ESC key)
 	            end
 
 	            if not inlineRepBarCreated and repProgress and repProgress.max and repProgress.max > 0 then
@@ -706,17 +478,16 @@ function OutstandingItemsUI:ShowPopup(zoneName, outstanding)
 
 	            -- Add extra space if reputation shown (rep bar row or 2-line text fallback)
 	            if repProgress and repProgress.max and repProgress.max > 0 then
-	                yOffset = yOffset - ((repLabel and repLabel ~= "") and 48 or 34)
+	                yOffset = yOffset - ((repLabel and repLabel ~= "") and 52 or 38)
 	            elseif repStatus then
-	                yOffset = yOffset - 36
+	                yOffset = yOffset - 40
 	            else
-	                yOffset = yOffset - 18
+	                yOffset = yOffset - 22
 	            end
 	        end
-	        yOffset = yOffset - 5
+	        yOffset = yOffset - 8
 	    end
     
-    -- Quests
     if #outstanding.quests > 0 then
         local questHeader = frame.content:CreateFontString(nil, "OVERLAY", "GameFontNormal")
         questHeader:SetPoint("TOPLEFT", 5, yOffset)
@@ -728,9 +499,7 @@ function OutstandingItemsUI:ShowPopup(zoneName, outstanding)
         end
         yOffset = yOffset - 20
         for _, item in ipairs(outstanding.quests) do
-            local row = CreateFrame("Button", nil, frame.content)
-            row:SetPoint("TOPLEFT", 15, yOffset)
-            row:SetSize(320, 16)
+            local row = CreatePopupItemRow(frame.content, 15, yOffset, 320, 16)
 
             local questText = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
             questText:SetPoint("TOPLEFT", row, "TOPLEFT", 0, 0)
@@ -739,30 +508,13 @@ function OutstandingItemsUI:ShowPopup(zoneName, outstanding)
             questText:SetJustifyV("MIDDLE")
             questText:SetText(string.format("  - %s", item._questName or item.name or "Quest Item"))
             row.textString = questText
-
-            row:SetScript("OnEnter", function(btn)
-                GameTooltip:SetOwner(btn, "ANCHOR_RIGHT")
-                GameTooltip:ClearLines()
-                GameTooltip:SetText(item.name or "Quest Item", 1, 0.82, 0, 1, true)
-                if item._questName then
-                    GameTooltip:AddLine("Quest: " .. item._questName, 0.5, 0.8, 1, true)
-                end
-                if item._questId then
-                    GameTooltip:AddLine("Quest ID: " .. tostring(item._questId), 0.7, 0.7, 0.7, true)
-                end
-                GameTooltip:AddLine(" ", 1, 1, 1, 1)
-                GameTooltip:Show()
-            end)
-            row:SetScript("OnLeave", function()
-                GameTooltip:Hide()
-            end)
+            AttachFullItemTooltip(row, item)
 
             yOffset = yOffset - 16
         end
         yOffset = yOffset - 5
     end
     
-    -- Achievements
     if #outstanding.achievements > 0 then
         local achHeader = frame.content:CreateFontString(nil, "OVERLAY", "GameFontNormal")
         achHeader:SetPoint("TOPLEFT", 5, yOffset)
@@ -774,10 +526,7 @@ function OutstandingItemsUI:ShowPopup(zoneName, outstanding)
         end
         yOffset = yOffset - 20
         for _, item in ipairs(outstanding.achievements) do
-            local row = CreateFrame("Button", nil, frame.content)
-            row:SetPoint("TOPLEFT", 15, yOffset)
-            row:SetSize(320, 16)
-            row:RegisterForClicks("LeftButtonUp")
+            local row = CreatePopupItemRow(frame.content, 15, yOffset, 320, 16)
 
             local achText = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
             achText:SetPoint("TOPLEFT", row, "TOPLEFT", 0, 0)
@@ -786,44 +535,13 @@ function OutstandingItemsUI:ShowPopup(zoneName, outstanding)
             achText:SetJustifyV("MIDDLE")
             achText:SetText(string.format("  - %s", item._achievementName or item.name or "Achievement Item"))
             row.textString = achText
-
-            row:SetScript("OnEnter", function(btn)
-                GameTooltip:SetOwner(btn, "ANCHOR_RIGHT")
-                GameTooltip:ClearLines()
-                GameTooltip:SetText(item.name or "Achievement Item", 1, 0.82, 0, 1, true)
-                if item._achievementName then
-                    GameTooltip:AddLine("Achievement: " .. item._achievementName, 1, 0.85, 0.3, true)
-                end
-                if item._achievementId then
-                    GameTooltip:AddLine("Achievement ID: " .. tostring(item._achievementId), 0.7, 0.7, 0.7, true)
-                end
-                GameTooltip:AddLine(" ", 1, 1, 1, 1)
-                GameTooltip:Show()
-            end)
-            row:SetScript("OnLeave", function()
-                GameTooltip:Hide()
-            end)
-            row:SetScript("OnClick", function()
-                local achievementID = item._achievementId
-                if achievementID then
-                    if not AchievementFrame then
-                        AchievementFrame_LoadUI()
-                    end
-                    if AchievementFrame then
-                        if not AchievementFrame:IsShown() then
-                            AchievementFrame_ToggleAchievementFrame()
-                        end
-                        AchievementFrame_SelectAchievement(achievementID)
-                    end
-                end
-            end)
+            AttachFullItemTooltip(row, item)
 
             yOffset = yOffset - 16
         end
         yOffset = yOffset - 5
     end
     
-    -- Drops
     if #outstanding.drops > 0 then
         local dropHeader = frame.content:CreateFontString(nil, "OVERLAY", "GameFontNormal")
         dropHeader:SetPoint("TOPLEFT", 5, yOffset)
@@ -834,9 +552,50 @@ function OutstandingItemsUI:ShowPopup(zoneName, outstanding)
             dropHeader:SetTextColor(c[1], c[2], c[3], 1)
         end
         yOffset = yOffset - 20
+        for _, item in ipairs(outstanding.drops) do
+            local row = CreatePopupItemRow(frame.content, 15, yOffset, 320, 16)
+
+            local dropText = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+            dropText:SetPoint("TOPLEFT", row, "TOPLEFT", 0, 0)
+            dropText:SetPoint("BOTTOMRIGHT", row, "BOTTOMRIGHT", 0, 0)
+            dropText:SetJustifyH("LEFT")
+            dropText:SetJustifyV("MIDDLE")
+            dropText:SetText(string_format("  - %s", item.name or "Drop Item"))
+            row.textString = dropText
+
+            AttachFullItemTooltip(row, item)
+            yOffset = yOffset - 16
+        end
+        yOffset = yOffset - 5
+    end
+
+    if outstanding.professions and #outstanding.professions > 0 then
+        local profHeader = frame.content:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+        profHeader:SetPoint("TOPLEFT", 5, yOffset)
+        profHeader:SetText(string_format("Professions: %d item%s", #outstanding.professions, #outstanding.professions > 1 and "s" or ""))
+        do
+            local colors = HousingTheme and HousingTheme.Colors or {}
+            local c = colors.sourceVendor or colors.statusInfo or {0.6, 0.8, 1.0, 1}
+            profHeader:SetTextColor(c[1], c[2], c[3], 1)
+        end
+        yOffset = yOffset - 20
+        for _, item in ipairs(outstanding.professions) do
+            local row = CreatePopupItemRow(frame.content, 15, yOffset, 320, 16)
+
+            local profText = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+            profText:SetPoint("TOPLEFT", row, "TOPLEFT", 0, 0)
+            profText:SetPoint("BOTTOMRIGHT", row, "BOTTOMRIGHT", 0, 0)
+            profText:SetJustifyH("LEFT")
+            profText:SetJustifyV("MIDDLE")
+            profText:SetText(string_format("  - %s", item.name or "Profession Item"))
+            row.textString = profText
+
+            AttachFullItemTooltip(row, item)
+            yOffset = yOffset - 16
+        end
+        yOffset = yOffset - 5
     end
     
-    -- Update content height
     frame.content:SetHeight(math.abs(yOffset) + 20)
 
     self:ApplyPopupTheme(frame)
@@ -845,4 +604,3 @@ end
 
 
 return OutstandingItemsUI
-

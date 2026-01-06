@@ -10,6 +10,56 @@ local currentFontSize = 12
 local fontStrings = StatisticsUI._fontStrings or {}
 StatisticsUI._fontStrings = fontStrings
 
+local function AttachTooltip(frame, title, linesOrFn)
+    if not frame then return end
+    frame:EnableMouse(true)
+
+    frame:SetScript("OnEnter", function(self)
+        if not _G.GameTooltip then return end
+        _G.GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        if title and title ~= "" then
+            _G.GameTooltip:SetText(title, 1, 0.82, 0, true)
+        else
+            _G.GameTooltip:SetText("", 1, 1, 1, true)
+        end
+
+        local lines = linesOrFn
+        if type(linesOrFn) == "function" then
+            local ok, result = pcall(linesOrFn, self)
+            if ok then
+                lines = result
+            else
+                lines = nil
+            end
+        end
+
+        if type(lines) == "table" then
+            for _, line in ipairs(lines) do
+                if type(line) == "table" then
+                    _G.GameTooltip:AddDoubleLine(
+                        tostring(line[1] or ""),
+                        tostring(line[2] or ""),
+                        1, 1, 1,
+                        0.8, 0.8, 0.8
+                    )
+                else
+                    _G.GameTooltip:AddLine(tostring(line), 0.9, 0.9, 0.9, true)
+                end
+            end
+        elseif type(lines) == "string" and lines ~= "" then
+            _G.GameTooltip:AddLine(lines, 0.9, 0.9, 0.9, true)
+        end
+
+        _G.GameTooltip:Show()
+    end)
+
+    frame:SetScript("OnLeave", function()
+        if _G.GameTooltip then
+            _G.GameTooltip:Hide()
+        end
+    end)
+end
+
 -- Helper function to format gold amounts
 local function FormatGold(amount)
     if amount >= 10000 then
@@ -22,7 +72,7 @@ local function FormatGold(amount)
 end
 
 -- Create a stat card (highlighted metric)
-local function CreateStatCard(parent, label, value, color, xOffset, yOffset, width)
+local function CreateStatCard(parent, label, value, color, xOffset, yOffset, width, tooltipTitle, tooltipLinesOrFn)
     local card = CreateFrame("Frame", nil, parent, "BackdropTemplate")
     card:SetPoint("TOPLEFT", xOffset, yOffset)
     card:SetSize(width or 180, 70)
@@ -55,11 +105,15 @@ local function CreateStatCard(parent, label, value, color, xOffset, yOffset, wid
     labelText:SetTextColor(0.7, 0.7, 0.7, 1)
     table.insert(fontStrings, labelText)
 
+    if tooltipTitle or tooltipLinesOrFn then
+        AttachTooltip(card, tooltipTitle or label, tooltipLinesOrFn)
+    end
+
     return card
 end
 
 -- Create an enhanced progress bar with gradient
-local function CreateProgressBar(parent, label, current, total, xOffset, yOffset, width, color)
+local function CreateProgressBar(parent, label, current, total, xOffset, yOffset, width, color, tooltipTitle, tooltipLinesOrFn)
     local container = CreateFrame("Frame", nil, parent)
     container:SetPoint("TOPLEFT", xOffset, yOffset)
     container:SetSize(width or 600, 40)
@@ -115,6 +169,10 @@ local function CreateProgressBar(parent, label, current, total, xOffset, yOffset
     borderBottom:SetPoint("BOTTOMLEFT", barBg, "BOTTOMLEFT", 0, -1)
     borderBottom:SetSize(width or 600, 1)
     borderBottom:SetVertexColor(0.4, 0.4, 0.4, 1)
+
+    if tooltipTitle or tooltipLinesOrFn then
+        AttachTooltip(container, tooltipTitle or label, tooltipLinesOrFn)
+    end
 
     return container, -45
 end
@@ -232,9 +290,20 @@ function StatisticsUI:UpdateStats()
     local percentage = stats.total > 0 and math.floor((stats.collected / stats.total) * 100) or 0
     local cardWidth = 140
     local cardSpacing = 10
-    CreateStatCard(content, "Completion", percentage .. "%", {0, 0.8, 0}, 0, yOffset, cardWidth)
-    CreateStatCard(content, "Collected", stats.collected, {0.2, 0.6, 1}, cardWidth + cardSpacing, yOffset, cardWidth)
-    CreateStatCard(content, "Missing", stats.missing, {1, 0.4, 0}, (cardWidth + cardSpacing) * 2, yOffset, cardWidth)
+    CreateStatCard(content, "Completion", percentage .. "%", {0, 0.8, 0}, 0, yOffset, cardWidth, "Completion", {
+        "Percent collected across all known housing items.",
+        {"Collected", string.format("%d / %d", stats.collected, stats.total)},
+        "Collected = owned (>0 stored+placed) or via collection fallback.",
+    })
+    CreateStatCard(content, "Collected", stats.collected, {0.2, 0.6, 1}, cardWidth + cardSpacing, yOffset, cardWidth, "Collected Items", {
+        "Items you currently own (stored+placed), with fallback to collection check.",
+        {"Count", tostring(stats.collected)},
+    })
+    CreateStatCard(content, "Missing", stats.missing, {1, 0.4, 0}, (cardWidth + cardSpacing) * 2, yOffset, cardWidth, "Missing Items", {
+        "Items not currently owned (stored+placed=0 and not collected by fallback).",
+        {"Count", tostring(stats.missing)},
+        {"Ready to Collect", tostring(stats.readyMissing or 0)},
+    })
     
     -- Travel stat cards (same row)
     if stats.travelStats.uniqueLocations > 0 then
@@ -242,9 +311,18 @@ function StatisticsUI:UpdateStats()
         for _ in pairs(stats.travelStats.locationsByZone) do zoneCount = zoneCount + 1 end
         
         local travelCardWidth = 140
-        CreateStatCard(content, "Zones to Visit", zoneCount, {1, 0.5, 0}, (cardWidth + cardSpacing) * 3, yOffset, travelCardWidth)
-        CreateStatCard(content, "Unique Locations", stats.travelStats.uniqueLocations, {1, 0.65, 0}, (cardWidth + cardSpacing) * 3 + travelCardWidth + cardSpacing, yOffset, travelCardWidth)
-        CreateStatCard(content, "Total Vendors", stats.travelStats.totalVendors, {1, 0.8, 0.2}, (cardWidth + cardSpacing) * 3 + (travelCardWidth + cardSpacing) * 2, yOffset, travelCardWidth)
+        CreateStatCard(content, "Zones to Visit", zoneCount, {1, 0.5, 0}, (cardWidth + cardSpacing) * 3, yOffset, travelCardWidth, "Zones to Visit", {
+            "Zones that have at least one vendor/location entry in the data set.",
+            {"Zones", tostring(zoneCount)},
+        })
+        CreateStatCard(content, "Unique Locations", stats.travelStats.uniqueLocations, {1, 0.65, 0}, (cardWidth + cardSpacing) * 3 + travelCardWidth + cardSpacing, yOffset, travelCardWidth, "Unique Locations", {
+            "Unique vendor location keys (zone + vendor + coords when available).",
+            {"Locations", tostring(stats.travelStats.uniqueLocations)},
+        })
+        CreateStatCard(content, "Total Vendors", stats.travelStats.totalVendors, {1, 0.8, 0.2}, (cardWidth + cardSpacing) * 3 + (travelCardWidth + cardSpacing) * 2, yOffset, travelCardWidth, "Total Vendors", {
+            "Unique vendor names encountered while scanning items.",
+            {"Vendors", tostring(stats.travelStats.totalVendors)},
+        })
     end
 
     yOffset = yOffset - 90
@@ -260,8 +338,68 @@ function StatisticsUI:UpdateStats()
     table.insert(fontStrings, sectionTitle)
     yOffset = yOffset - 35
 
-    CreateProgressBar(content, "Overall Progress", stats.collected, stats.total, 20, yOffset, maxBarWidth, {0, 0.8, 0})
+    CreateProgressBar(content, "Overall Progress", stats.collected, stats.total, 20, yOffset, maxBarWidth, {0, 0.8, 0}, "Overall Progress", {
+        "Collection progress across all known housing items.",
+        {"Collected", string.format("%d / %d", stats.collected, stats.total)},
+    })
     yOffset = yOffset - 60
+
+    -- READY TO COLLECT (unlocked but missing)
+    if stats.missing and stats.missing > 0 and stats.readyMissing and stats.readyMissing > 0 then
+        CreateProgressBar(content, "Ready to Collect (Unlocked)", stats.readyMissing, stats.missing, 20, yOffset, maxBarWidth * 0.6, {0, 0.85, 0.8}, "Ready to Collect (Unlocked)", {
+            "Missing items whose requirements are already completed.",
+            {"Ready", string.format("%d / %d missing", stats.readyMissing, stats.missing)},
+            {"From Achievements", tostring((stats.readyBy and stats.readyBy.Achievement) or 0)},
+            {"From Quests", tostring((stats.readyBy and stats.readyBy.Quest) or 0)},
+        })
+        yOffset = yOffset - 55
+
+        if stats.readyItems and #stats.readyItems > 0 then
+            local readyTitle = content:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+            readyTitle:SetPoint("TOPLEFT", 20, yOffset)
+            local readyFont, _, readyFlags = readyTitle:GetFont()
+            if currentFontSize ~= 12 then
+                readyTitle:SetFont(readyFont, currentFontSize, readyFlags)
+            end
+            readyTitle:SetText("|cFFFFFFFFExamples (Unlocked but Uncollected):|r")
+            table.insert(fontStrings, readyTitle)
+            yOffset = yOffset - 25
+
+            for i, item in ipairs(stats.readyItems) do
+                if i > 12 then break end
+                if item and item.name then
+                    local itemText = content:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+                    itemText:SetPoint("TOPLEFT", 40, yOffset)
+                    itemText:SetWidth(520)
+                    itemText:SetJustifyH("LEFT")
+                    local itemFont, _, itemFlags = itemText:GetFont()
+                    if currentFontSize ~= 12 then
+                        itemText:SetFont(itemFont, currentFontSize - 1, itemFlags)
+                    end
+
+                    local costStr = nil
+                    if item.currency and item.currency ~= "" then
+                        costStr = item.currency
+                    elseif item.price and item.price > 0 then
+                        costStr = FormatGold(item.price)
+                    else
+                        costStr = "|cFF00FF00Free|r"
+                    end
+
+                    local zoneStr = (item.zone and item.zone ~= "") and (" |cFF888888(" .. item.zone .. ")|r") or ""
+                    local reasonStr = item.reason or "Unlocked"
+                    if item.achievementDate and type(item.achievementDate) == "string" and item.achievementDate ~= "" then
+                        reasonStr = reasonStr .. " " .. item.achievementDate
+                    end
+                    itemText:SetText(string.format("- %s - %s |cFF888888(%s, %s)|r%s", item.name, costStr, item.source or "Unknown", reasonStr, zoneStr))
+                    table.insert(fontStrings, itemText)
+                    yOffset = yOffset - 18
+                end
+            end
+
+            yOffset = yOffset - 15
+        end
+    end
 
     -- ACHIEVEMENT TRACKING SECTION
     if stats.achievementStats.totalAchievements > 0 then
@@ -278,19 +416,37 @@ function StatisticsUI:UpdateStats()
         -- Achievement stat cards
         local achCardWidth = 160
         local achCardSpacing = 10
-        CreateStatCard(content, "Total Achievements", stats.achievementStats.totalAchievements, {1, 0.843, 0}, 0, yOffset, achCardWidth)
-        CreateStatCard(content, "Completed", stats.achievementStats.achievementsCompleted, {0, 0.8, 0}, achCardWidth + achCardSpacing, yOffset, achCardWidth)
-        CreateStatCard(content, "Incomplete", stats.achievementStats.achievementsIncomplete, {1, 0.4, 0}, (achCardWidth + achCardSpacing) * 2, yOffset, achCardWidth)
-        CreateStatCard(content, "Achievement Points", stats.achievementStats.earnedPoints .. "/" .. stats.achievementStats.totalPoints, {0.64, 0.21, 0.93}, (achCardWidth + achCardSpacing) * 3, yOffset, achCardWidth)
+        CreateStatCard(content, "Total Achievements", stats.achievementStats.totalAchievements, {1, 0.843, 0}, 0, yOffset, achCardWidth, "Total Achievements", {
+            "Unique achievement IDs referenced by housing items.",
+            {"Achievements", tostring(stats.achievementStats.totalAchievements)},
+        })
+        CreateStatCard(content, "Completed", stats.achievementStats.achievementsCompleted, {0, 0.8, 0}, achCardWidth + achCardSpacing, yOffset, achCardWidth, "Completed Achievements", {
+            "Completed achievements (via achievement API).",
+            {"Completed", tostring(stats.achievementStats.achievementsCompleted)},
+        })
+        CreateStatCard(content, "Incomplete", stats.achievementStats.achievementsIncomplete, {1, 0.4, 0}, (achCardWidth + achCardSpacing) * 2, yOffset, achCardWidth, "Incomplete Achievements", {
+            "Incomplete achievements (via achievement API).",
+            {"Incomplete", tostring(stats.achievementStats.achievementsIncomplete)},
+        })
+        CreateStatCard(content, "Achievement Points", stats.achievementStats.earnedPoints .. "/" .. stats.achievementStats.totalPoints, {0.64, 0.21, 0.93}, (achCardWidth + achCardSpacing) * 3, yOffset, achCardWidth, "Achievement Points", {
+            "Points from the referenced achievements (earned/total).",
+            {"Points", string.format("%d / %d", stats.achievementStats.earnedPoints, stats.achievementStats.totalPoints)},
+        })
 
         yOffset = yOffset - 85
 
         -- Achievement progress bar
-        CreateProgressBar(content, "Achievement Completion", stats.achievementStats.achievementsCompleted, stats.achievementStats.totalAchievements, 20, yOffset, maxBarWidth * 0.6, {1, 0.843, 0})
+        CreateProgressBar(content, "Achievement Completion", stats.achievementStats.achievementsCompleted, stats.achievementStats.totalAchievements, 20, yOffset, maxBarWidth * 0.6, {1, 0.843, 0}, "Achievement Completion", {
+            "How many of the referenced achievements you have completed.",
+            {"Completed", string.format("%d / %d", stats.achievementStats.achievementsCompleted, stats.achievementStats.totalAchievements)},
+        })
         yOffset = yOffset - 55
 
         -- Achievement points progress
-        CreateProgressBar(content, "Achievement Points Earned", stats.achievementStats.earnedPoints, stats.achievementStats.totalPoints, 20, yOffset, maxBarWidth * 0.6, {0.64, 0.21, 0.93})
+        CreateProgressBar(content, "Achievement Points Earned", stats.achievementStats.earnedPoints, stats.achievementStats.totalPoints, 20, yOffset, maxBarWidth * 0.6, {0.64, 0.21, 0.93}, "Achievement Points Earned", {
+            "Achievement points earned from the referenced achievements.",
+            {"Points", string.format("%d / %d", stats.achievementStats.earnedPoints, stats.achievementStats.totalPoints)},
+        })
         yOffset = yOffset - 55
 
         -- Items from achievements info
@@ -340,7 +496,7 @@ function StatisticsUI:UpdateStats()
                 if currentFontSize ~= 12 then
                     expText:SetFont(expFont, currentFontSize - 1, expFlags)
                 end
-                expText:SetText(string.format("â€¢ %s: |cFF00FF00%d%%|r (%d/%d) - |cFFFFD700%dpts|r", 
+                expText:SetText(string.format("- %s: |cFF00FF00%d%%|r (%d/%d) - |cFFFFD700%dpts|r", 
                     exp.name, percent, exp.completed, exp.total, exp.earnedPoints))
                 table.insert(fontStrings, expText)
                 yOffset = yOffset - 18
@@ -365,14 +521,26 @@ function StatisticsUI:UpdateStats()
         -- Quest stat cards
         local questCardWidth = 160
         local questCardSpacing = 10
-        CreateStatCard(content, "Total Quests", stats.questStats.totalQuests, {0.118, 0.565, 1}, 0, yOffset, questCardWidth)
-        CreateStatCard(content, "Completed", stats.questStats.questsCompleted, {0, 0.8, 0}, questCardWidth + questCardSpacing, yOffset, questCardWidth)
-        CreateStatCard(content, "Incomplete", stats.questStats.questsIncomplete, {1, 0.4, 0}, (questCardWidth + questCardSpacing) * 2, yOffset, questCardWidth)
+        CreateStatCard(content, "Total Quests", stats.questStats.totalQuests, {0.118, 0.565, 1}, 0, yOffset, questCardWidth, "Total Quests", {
+            "Unique quest IDs referenced by housing items.",
+            {"Quests", tostring(stats.questStats.totalQuests)},
+        })
+        CreateStatCard(content, "Completed", stats.questStats.questsCompleted, {0, 0.8, 0}, questCardWidth + questCardSpacing, yOffset, questCardWidth, "Completed Quests", {
+            "Completed quests (via quest completion API).",
+            {"Completed", tostring(stats.questStats.questsCompleted)},
+        })
+        CreateStatCard(content, "Incomplete", stats.questStats.questsIncomplete, {1, 0.4, 0}, (questCardWidth + questCardSpacing) * 2, yOffset, questCardWidth, "Incomplete Quests", {
+            "Incomplete quests (via quest completion API).",
+            {"Incomplete", tostring(stats.questStats.questsIncomplete)},
+        })
 
         yOffset = yOffset - 85
 
         -- Quest progress bar
-        CreateProgressBar(content, "Quest Completion", stats.questStats.questsCompleted, stats.questStats.totalQuests, 20, yOffset, maxBarWidth * 0.6, {0.118, 0.565, 1})
+        CreateProgressBar(content, "Quest Completion", stats.questStats.questsCompleted, stats.questStats.totalQuests, 20, yOffset, maxBarWidth * 0.6, {0.118, 0.565, 1}, "Quest Completion", {
+            "How many of the referenced quests you have completed.",
+            {"Completed", string.format("%d / %d", stats.questStats.questsCompleted, stats.questStats.totalQuests)},
+        })
         yOffset = yOffset - 55
 
         -- Items from quests info
@@ -420,7 +588,7 @@ function StatisticsUI:UpdateStats()
                 if currentFontSize ~= 12 then
                     expText:SetFont(expFont, currentFontSize - 1, expFlags)
                 end
-                expText:SetText(string.format("â€¢ %s: |cFF00FF00%d%%|r (%d/%d)", 
+                expText:SetText(string.format("- %s: |cFF00FF00%d%%|r (%d/%d)", 
                     exp.name, percent, exp.completed, exp.total))
                 table.insert(fontStrings, expText)
                 yOffset = yOffset - 18
@@ -797,9 +965,77 @@ function StatisticsUI:UpdateStats()
                 40,
                 yOffset,
                 maxBarWidth * 0.5,
-                {1, 0.5, 0}  -- Orange color for travel
+                {1, 0.5, 0},  -- Orange color for travel
+                zone.name,
+                {
+                    {"Uncollected", tostring(zone.missing)},
+                    {"Collected", string.format("%d / %d", zone.collected, zone.total)},
+                    {"Vendors", tostring(zone.vendorCount)},
+                }
             )
             yOffset = yOffset - 50
+        end
+
+        -- Show vendors with most uncollected vendor items (vendor items only)
+        local vendorArray = {}
+        if stats.byVendor then
+            for _, vendorData in pairs(stats.byVendor) do
+                if vendorData and vendorData.missing and vendorData.missing > 0 and vendorData.total and vendorData.total > 0 then
+                    table.insert(vendorArray, vendorData)
+                end
+            end
+        end
+
+        if #vendorArray > 0 then
+            table.sort(vendorArray, function(a, b)
+                if a.missing == b.missing then
+                    return (a.missingValue or 0) > (b.missingValue or 0)
+                end
+                return a.missing > b.missing
+            end)
+
+            local vendorSubtitle = content:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+            vendorSubtitle:SetPoint("TOPLEFT", 20, yOffset)
+            local vendorSubFont, _, vendorSubFlags = vendorSubtitle:GetFont()
+            if currentFontSize ~= 12 then
+                vendorSubtitle:SetFont(vendorSubFont, currentFontSize, vendorSubFlags)
+            end
+            vendorSubtitle:SetText("|cFFFFFFFFTop Vendors by Uncollected Vendor Items:|r")
+            table.insert(fontStrings, vendorSubtitle)
+            yOffset = yOffset - 30
+
+            for i, vendor in ipairs(vendorArray) do
+                if i > 10 then break end
+
+                local missingValueStr = ((vendor.missingValue or 0) > 0) and FormatGold(vendor.missingValue) or "|cFF00FF00Free|r"
+                local vendorLabel = string.format(
+                    "%s (%s) |cFF888888- %d missing (%s)|r",
+                    vendor.vendor or "Unknown Vendor",
+                    vendor.zone or "Unknown Zone",
+                    vendor.missing or 0,
+                    missingValueStr
+                )
+
+                CreateProgressBar(
+                    content,
+                    vendorLabel,
+                    vendor.collected or 0,
+                    vendor.total or 0,
+                    40,
+                    yOffset,
+                    maxBarWidth * 0.7,
+                    {0, 0.8, 1},  -- Blue color for vendor section
+                    (vendor.vendor or "Vendor") .. " (" .. (vendor.zone or "Zone") .. ")",
+                    {
+                        {"Uncollected", tostring(vendor.missing or 0)},
+                        {"Collected", string.format("%d / %d", vendor.collected or 0, vendor.total or 0)},
+                        {"Missing Value", missingValueStr},
+                        {"Free Missing", tostring(vendor.freeMissing or 0)},
+                        {"Cheap (<=50g)", tostring(vendor.cheapMissing or 0)},
+                    }
+                )
+                yOffset = yOffset - 50
+            end
         end
 
         yOffset = yOffset - 20
@@ -876,7 +1112,7 @@ function StatisticsUI:UpdateStats()
 
                 local priceStr = (item.price and item.price > 0) and FormatGold(item.price) or "|cFF00FF00Free|r"
                 local sourceStr = item.source or "Unknown"
-                itemText:SetText(string.format("â€¢ %s - %s |cFF888888(%s)|r", item.name, priceStr, sourceStr))
+                itemText:SetText(string.format("- %s - %s |cFF888888(%s)|r", item.name, priceStr, sourceStr))
                 table.insert(fontStrings, itemText)
                 yOffset = yOffset - 18
             end

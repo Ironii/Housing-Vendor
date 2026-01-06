@@ -1,4 +1,5 @@
-local ItemList = {}
+local ItemList = _G["HousingItemList"] or {}
+_G["HousingItemList"] = ItemList
 ItemList.__index = ItemList
 
 -- Cache global references for performance
@@ -38,11 +39,46 @@ local allItems = {}
 local filteredItems = {}
 local currentFilters = {}
 local sortDirty = true  -- Dirty flag to track when sorting is needed
+local scrollUpdateHandle = nil
+local scrollIdleHandle = nil
 
 -- Event frame for housing decor collection updates
 local eventFrame = CreateFrame("Frame")
 -- Note: Blizzard may not have a specific favorite changed event
 -- We'll check favorites on item update instead
+
+local ahListenerKey = "HousingItemList_AH"
+local ahUpdateHandle = nil
+
+local function TryRegisterAuctionHouseListener()
+    local api = _G.HousingAuctionHouseAPI
+    if not (api and api.RegisterListener and api.UnregisterListener) then
+        return false
+    end
+    if HousingItemList and HousingItemList._ahListenerRegistered then
+        return true
+    end
+
+    api:UnregisterListener(ahListenerKey)
+    api:RegisterListener(ahListenerKey, function(event, ...)
+        if event ~= "price_updated" then
+            return
+        end
+        if not HousingItemList or not HousingItemList.UpdateVisibleButtons then
+            return
+        end
+        if ahUpdateHandle and ahUpdateHandle.Cancel then
+            ahUpdateHandle:Cancel()
+        end
+        ahUpdateHandle = C_Timer.NewTimer(0.15, function()
+            if HousingItemList then
+                HousingItemList:UpdateVisibleButtons()
+            end
+        end)
+    end)
+    HousingItemList._ahListenerRegistered = true
+    return true
+end
 
 -- Use centralized tooltip scanner (replaces local implementation)
 local function ScanTooltipForAllData(itemID)
@@ -79,6 +115,21 @@ local function ScanTooltipForHousingData(itemID)
         houseIcon = allData.houseIcon,
         description = allData.description
     }
+end
+
+function ItemList:GetFilteredItemIDs()
+    local ids = {}
+    for _, entry in ipairs(filteredItems) do
+        if type(entry) == "number" then
+            table_insert(ids, entry)
+        else
+            local itemID = tonumber(entry and (entry.itemID or entry.id))
+            if itemID then
+                table_insert(ids, itemID)
+            end
+        end
+    end
+    return ids
 end
 
 -- Refresh collection status for all visible buttons
@@ -167,6 +218,12 @@ end
 -- Initialize item list
 function ItemList:Initialize(parentFrame)
     self:CreateItemListSection(parentFrame)
+
+    if not TryRegisterAuctionHouseListener() and C_Timer and C_Timer.After then
+        C_Timer.After(1.0, function()
+            TryRegisterAuctionHouseListener()
+        end)
+    end
     
     -- Register events for housing decor collection updates
     -- Primary events (may not exist in all WoW versions - use pcall for safety)
@@ -224,9 +281,23 @@ function ItemList:CreateItemListSection(parentFrame)
     -- Scroll handler - update visible buttons when scrolling
     scrollFrame:SetScript("OnVerticalScroll", function(self, offset)
         ScrollFrame_OnVerticalScroll(self, offset, BUTTON_HEIGHT + BUTTON_SPACING)
-        C_Timer.After(0, function()
+
+        -- Throttle scroll updates and run a small idle cleanup after scrolling stops.
+        if scrollUpdateHandle and scrollUpdateHandle.Cancel then
+            scrollUpdateHandle:Cancel()
+        end
+        scrollUpdateHandle = C_Timer.NewTimer(0.03, function()
             if HousingItemList then
                 HousingItemList:UpdateVisibleButtons()
+            end
+        end)
+
+        if scrollIdleHandle and scrollIdleHandle.Cancel then
+            scrollIdleHandle:Cancel()
+        end
+        scrollIdleHandle = C_Timer.NewTimer(0.6, function()
+            if HousingItemList and HousingItemList.OnScrollIdle then
+                HousingItemList:OnScrollIdle()
             end
         end)
     end)
@@ -348,6 +419,14 @@ function ItemList:CreateItemButton(parent, index)
     local accentGold = colors.accentGold or {0.85, 0.75, 0.45, 1.0}
     costText:SetTextColor(accentGold[1], accentGold[2], accentGold[3], 1)
     button.costText = costText
+
+    -- Auction House price text (right side, above cost; only shown for profession items)
+    local ahPriceText = button:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    ahPriceText:SetPoint("BOTTOMRIGHT", costText, "TOPRIGHT", 0, 2)
+    ahPriceText:SetJustifyH("RIGHT")
+    ahPriceText:SetTextColor(accentGold[1], accentGold[2], accentGold[3], 1)
+    ahPriceText:Hide()
+    button.ahPriceText = ahPriceText
     
     -- Zone text (above cost, smaller)
     local zoneText = button:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
@@ -390,15 +469,27 @@ function ItemList:UpdateItems(items, filters)
     allItems = items or {}
     filteredItems = allItems
     currentFilters = filters or {}
+
+    -- Only reset scroll position when filters actually change (prevents flashing/jumping during
+    -- background refreshes like quality-cache warmup).
+    local filterHash = ""
+    if HousingDataManager and HousingDataManager.Util and HousingDataManager.Util.GetFilterHash then
+        filterHash = HousingDataManager.Util.GetFilterHash(currentFilters) or ""
+    end
+    local filtersChanged = (filterHash ~= (self._lastFilterHash or ""))
+    self._lastFilterHash = filterHash
     
-    -- Apply filters if provided (ID-based, low overhead)
-    if filters and HousingDataManager and HousingDataManager.FilterItemIDs then
-        filteredItems = HousingDataManager:FilterItemIDs(allItems, filters)
-        sortDirty = false
-    elseif filters and HousingDataManager and HousingDataManager.FilterItems then
-        -- Legacy fallback (full item tables)
-        filteredItems = HousingDataManager:FilterItems(allItems, filters)
-        sortDirty = true
+    -- Apply filters (handle both ID lists and full item records)
+    if filters and HousingDataManager then
+        local first = allItems and allItems[1] or nil
+        local isIdList = type(first) == "number" or (type(first) == "string" and tonumber(first) ~= nil)
+        if isIdList and HousingDataManager.FilterItemIDs then
+            filteredItems = HousingDataManager:FilterItemIDs(allItems, filters)
+            sortDirty = false
+        elseif not isIdList and HousingDataManager.FilterItems then
+            filteredItems = HousingDataManager:FilterItems(allItems, filters)
+            sortDirty = true
+        end
     end
     
     -- Refresh collection status after updating items (instant)
@@ -414,8 +505,9 @@ function ItemList:UpdateItems(items, filters)
     -- Update scroll frame
     if scrollFrame then
         scrollFrame:UpdateScrollChildRect()
-        -- Reset scroll to top when filters change
-        scrollFrame:SetVerticalScroll(0)
+        if filtersChanged then
+            scrollFrame:SetVerticalScroll(0)
+        end
     end
 
     -- Update visible buttons synchronously (no delay needed)
@@ -429,11 +521,54 @@ function ItemList:UpdateVisibleButtons()
     local scrollOffset = scrollFrame:GetVerticalScroll()
     local startIndex = math.floor(scrollOffset / (BUTTON_HEIGHT + BUTTON_SPACING)) + 1
     local endIndex = math.min(startIndex + VISIBLE_BUTTONS, #filteredItems)
+    local visibleCount = math.max(0, endIndex - startIndex + 1)
     
-    -- Hide all buttons first
-    for _, button in ipairs(buttons) do
-        button:Hide()
+    -- Hide buttons that are no longer needed and cancel any async work on them.
+    for idx = visibleCount + 1, #buttons do
+        local button = buttons[idx]
+        if button then
+            if ItemList.CancelAsyncWork then
+                ItemList.CancelAsyncWork(button)
+            end
+            button.itemData = nil
+            button:Hide()
+        end
     end
+
+    -- Empty-state label
+    if not container.emptyText then
+        local colors = HousingTheme and HousingTheme.Colors or {}
+        local textMuted = colors.textMuted or {0.50, 0.48, 0.58, 1.0}
+        local t = container:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+        t:SetPoint("TOPLEFT", container, "TOPLEFT", 10, -10)
+        t:SetTextColor(textMuted[1], textMuted[2], textMuted[3], 1)
+        t:SetJustifyH("LEFT")
+        t:SetText("No items match the current filters.")
+        t:Hide()
+        container.emptyText = t
+    end
+
+    if #filteredItems == 0 then
+        -- No results: stop all async work on pooled buttons.
+        for idx = 1, #buttons do
+            local button = buttons[idx]
+            if button then
+                if ItemList.CancelAsyncWork then
+                    ItemList.CancelAsyncWork(button)
+                end
+                button.itemData = nil
+                button:Hide()
+            end
+        end
+        if HousingDataManager and HousingDataManager._state and HousingDataManager._state._qualityFilterLoading then
+            container.emptyText:SetText("Loading quality data...")
+        else
+            container.emptyText:SetText("No items match the current filters.")
+        end
+        container.emptyText:Show()
+        return
+    end
+    container.emptyText:Hide()
     
     -- Show and update visible buttons (create on demand)
     for i = startIndex, endIndex do
@@ -469,11 +604,36 @@ function ItemList:UpdateVisibleButtons()
             end
             
             button:Show()
+        else
+            -- Clear slot if record could not be resolved.
+            if ItemList.CancelAsyncWork then
+                ItemList.CancelAsyncWork(button)
+            end
+            button.itemData = nil
+            button:Hide()
         end
     end
     
     -- Refresh collection status after updating visible buttons (instant)
     ItemList:RefreshCollectionStatus()
+end
+
+-- Called after scrolling has been idle for a short period.
+function ItemList:OnScrollIdle()
+    -- Cancel async work on any hidden pooled buttons (safety).
+    for _, button in ipairs(buttons) do
+        if button and (not button.IsShown or not button:IsShown()) then
+            if ItemList.CancelAsyncWork then
+                ItemList.CancelAsyncWork(button)
+            end
+            button.itemData = nil
+        end
+    end
+
+    -- Light GC step to reduce memory pressure after heavy scrolling.
+    if collectgarbage then
+        collectgarbage("step", 500)
+    end
 end
 
 -- Apply font size to all buttons
@@ -509,6 +669,11 @@ function ItemList:Cleanup()
     -- Hide buttons but keep references for re-use (better performance than recreating)
     for i = 1, #buttons do
         if buttons[i] then
+            -- Cancel any in-flight async work (tickers/timers) so they don't keep references alive.
+            if ItemList.CancelAsyncWork then
+                ItemList.CancelAsyncWork(buttons[i])
+            end
+            buttons[i].itemData = nil
             buttons[i]:Hide()
         end
     end

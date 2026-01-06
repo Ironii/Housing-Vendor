@@ -11,7 +11,148 @@ local function GetTheme()
 end
 
 local Tooltip = {}
-function Tooltip.AttachButton(button)
+local achievementCache = {}
+
+local function FormatAchievementDate(month, day, year)
+    month = tonumber(month)
+    day = tonumber(day)
+    year = tonumber(year)
+    if not month or not day or not year then return nil end
+    if month < 1 or month > 12 then return nil end
+    if day < 1 or day > 31 then return nil end
+    if year > 0 and year < 100 then
+        year = 2000 + year
+    end
+    if year < 1900 then return nil end
+    return string.format("%02d/%02d/%04d", month, day, year)
+end
+
+local function NormalizeAchievementDateText(dateText)
+    if type(dateText) ~= "string" or dateText == "" then return nil end
+    local m, d, y = dateText:match("^(%d+)%D+(%d+)%D+(%d+)$")
+    if m and d and y then
+        return FormatAchievementDate(m, d, y)
+    end
+    return dateText
+end
+
+local function GetAchievementCriteriaSummary(achievementID)
+    achievementID = tonumber(achievementID)
+    if not achievementID then return nil end
+
+    -- Progress-bar achievements (quantity based)
+    do
+        local cur, max = nil, nil
+        if C_AchievementInfo and C_AchievementInfo.GetAchievementProgressBar then
+            local ok, c, m = pcall(C_AchievementInfo.GetAchievementProgressBar, achievementID)
+            if ok then
+                cur, max = tonumber(c), tonumber(m)
+            end
+        elseif _G.GetAchievementProgressBar then
+            local ok, c, m = pcall(_G.GetAchievementProgressBar, achievementID)
+            if ok then
+                cur, max = tonumber(c), tonumber(m)
+            end
+        end
+
+        if max and max > 0 then
+            return { type = "progress", current = cur or 0, max = max }
+        end
+    end
+
+    -- Criteria-based achievements
+    local numCriteria = nil
+    if C_AchievementInfo and C_AchievementInfo.GetAchievementNumCriteria then
+        local ok, n = pcall(C_AchievementInfo.GetAchievementNumCriteria, achievementID)
+        if ok then numCriteria = tonumber(n) end
+    elseif _G.GetAchievementNumCriteria then
+        local ok, n = pcall(_G.GetAchievementNumCriteria, achievementID)
+        if ok then numCriteria = tonumber(n) end
+    end
+
+    if not numCriteria or numCriteria <= 0 then return nil end
+
+    local completedCount = 0
+    for i = 1, numCriteria do
+        local completed = nil
+        if C_AchievementInfo and C_AchievementInfo.GetAchievementCriteriaInfo then
+            local ok, _, _, c = pcall(C_AchievementInfo.GetAchievementCriteriaInfo, achievementID, i)
+            if ok then completed = c end
+        elseif _G.GetAchievementCriteriaInfo then
+            local ok, _, _, c = pcall(_G.GetAchievementCriteriaInfo, achievementID, i)
+            if ok then completed = c end
+        end
+
+        if completed then
+            completedCount = completedCount + 1
+        end
+    end
+
+    return { type = "criteria", completed = completedCount, total = numCriteria }
+end
+
+local function GetAchievementStatus(achievementID)
+    if not achievementID then return nil end
+    achievementID = tonumber(achievementID)
+    if not achievementID then return nil end
+
+    if achievementCache[achievementID] then
+        return achievementCache[achievementID]
+    end
+
+    local status = {
+        completed = nil,
+        points = nil,
+        dateText = nil,
+        wasEarnedByMe = nil,
+        earnedBy = nil,
+        progress = nil, -- { type="criteria"|"progress", ... }
+    }
+
+    -- Prefer addon cache if available (may include points/completion info).
+    local completion = HousingAPI and HousingAPI.GetAchievementCompletion and HousingAPI:GetAchievementCompletion(achievementID) or nil
+    if completion then
+        status.completed = completion.completed
+        status.points = completion.points
+        status.dateText = NormalizeAchievementDateText(completion.date or completion.completionDate or nil)
+        status.wasEarnedByMe = completion.wasEarnedByMe or status.wasEarnedByMe
+        status.earnedBy = completion.earnedBy or completion.earnedByCharacter or status.earnedBy
+    end
+
+    -- Blizzard API fallback (supports completion date as Y/M/D or via GetAchievementInfo multiple returns).
+    if C_AchievementInfo and C_AchievementInfo.GetAchievementInfo then
+        local ok, achInfo = pcall(C_AchievementInfo.GetAchievementInfo, achievementID)
+        if ok and achInfo then
+            status.completed = achInfo.completed
+            status.points = achInfo.points
+            status.wasEarnedByMe = achInfo.wasEarnedByMe
+            if achInfo.completed then
+                status.dateText = NormalizeAchievementDateText(achInfo.dateCompleted or status.dateText)
+                if not status.dateText then
+                    status.dateText = FormatAchievementDate(achInfo.month, achInfo.day, achInfo.year)
+                end
+            end
+        end
+    elseif _G.GetAchievementInfo then
+        local ok, _, _, points, completed, month, day, year, _, _, _, _, _, wasEarnedByMe, earnedBy = pcall(_G.GetAchievementInfo, achievementID)
+        if ok then
+            status.completed = completed
+            status.points = points
+            status.wasEarnedByMe = wasEarnedByMe
+            status.earnedBy = earnedBy or status.earnedBy
+            if completed then
+                status.dateText = FormatAchievementDate(month, day, year)
+            end
+        end
+    end
+
+    status.progress = GetAchievementCriteriaSummary(achievementID)
+    achievementCache[achievementID] = status
+    return status
+end
+function Tooltip.AttachButton(button, opts)
+    opts = opts or {}
+    local noHoverSkin = opts.noHoverSkin == true
     local theme = GetTheme()
     local colors = theme.Colors or {}
 
@@ -36,20 +177,21 @@ function Tooltip.AttachButton(button)
                     C_Timer.After(0.05, function() UpdateTooltipOnModifier(frame) end)
                 end
             end)
-            -- Hover state: lighter background, accent border
-            self:SetBackdropColor(bgHover[1], bgHover[2], bgHover[3], bgHover[4])
-            self:SetBackdropBorderColor(accentPrimary[1], accentPrimary[2], accentPrimary[3], 1)
-            
-            -- No map icon hover effect needed anymore
-            
-            -- Brighten the backdrop color on hover (preserve faction/source colors)
-            if self.originalBackdropColor then
-                local r, g, b, a = unpack(self.originalBackdropColor)
-                -- Brighten significantly for better visibility
-                self:SetBackdropColor(math.min(r + 0.2, 1), math.min(g + 0.2, 1), math.min(b + 0.2, 1), 1)
-            else
-                -- Fallback if color wasn't stored
-                self:SetBackdropColor(0.3, 0.3, 0.3, 1)
+
+            if not noHoverSkin then
+                -- Hover state: lighter background, accent border
+                self:SetBackdropColor(bgHover[1], bgHover[2], bgHover[3], bgHover[4])
+                self:SetBackdropBorderColor(accentPrimary[1], accentPrimary[2], accentPrimary[3], 1)
+
+                -- Brighten the backdrop color on hover (preserve faction/source colors)
+                if self.originalBackdropColor then
+                    local r, g, b, a = unpack(self.originalBackdropColor)
+                    -- Brighten significantly for better visibility
+                    self:SetBackdropColor(math.min(r + 0.2, 1), math.min(g + 0.2, 1), math.min(b + 0.2, 1), 1)
+                else
+                    -- Fallback if color wasn't stored
+                    self:SetBackdropColor(0.3, 0.3, 0.3, 1)
+                end
             end
             
             -- Gather all available information from all APIs
@@ -308,6 +450,81 @@ function Tooltip.AttachButton(button)
             -- Cost information (parse on-demand if not already available)
             local costDisplay = nil
 
+            local function AddGoldAndCurrencyIconsFromStatic(text, components)
+                if type(text) ~= "string" or text == "" then
+                    return text
+                end
+
+                -- Gold icon
+                text = text:gsub("([%d,]+)%s*[Gg]old(%*?)", "%1 |TInterface\\MoneyFrame\\UI-GoldIcon:0|t%2")
+
+                local function GetItemIconMarkup(itemID)
+                    local id = tonumber(itemID)
+                    if not id or id <= 0 then return nil end
+                    local icon = nil
+                    if C_Item and C_Item.GetItemIconByID then
+                        icon = C_Item.GetItemIconByID(id)
+                    end
+                    if (not icon or icon == "") and GetItemIcon then
+                        icon = GetItemIcon(id)
+                    end
+                    if not icon or icon == "" then return nil end
+                    return "|T" .. tostring(icon) .. ":14|t"
+                end
+
+                -- Known item-based costs (Mechagon parts, etc.), even when components are missing/unstructured.
+                do
+                    local knownItems = {
+                        { id = 166970, name = "Energy Cell" },
+                        { id = 168832, name = "Galvanic Oscillator" },
+                        { id = 168327, name = "Chain Ignitercoil" },
+                        { id = 169610, name = "S.P.A.R.E. Crate" },
+                        { id = 166846, name = "Spare Parts" },
+                    }
+                    for _, k in ipairs(knownItems) do
+                        local icon = GetItemIconMarkup(k.id)
+                        if icon and icon ~= "" then
+                            local escapedName = k.name:gsub("([^%w])", "%%%1")
+                            text = text:gsub("([%d,]+)%s+" .. escapedName .. "(%*?)", "%1 " .. icon .. "%2")
+                        end
+                    end
+                end
+
+                if type(components) ~= "table" then
+                    return text
+                end
+
+                for _, component in ipairs(components) do
+                    local itemID = component and component.itemID
+                    local currencyTypeID = component and component.currencyTypeID
+                    local amount = component and component.amount
+                    local name = component and component.name
+                    if itemID and amount and name then
+                        local icon = GetItemIconMarkup(itemID)
+                        if icon then
+                            local escapedName = tostring(name):gsub("([^%w])", "%%%1")
+                            local amountStr = tostring(amount)
+                            local amountWithComma = amountStr:reverse():gsub("(%d%d%d)", "%1,"):reverse():gsub("^,", "")
+                            text = text:gsub(amountWithComma .. "%s+" .. escapedName, amountWithComma .. " " .. icon)
+                            text = text:gsub(amountStr .. "%s+" .. escapedName, amountStr .. " " .. icon)
+                        end
+                    elseif currencyTypeID and amount and name and C_CurrencyInfo and C_CurrencyInfo.GetCurrencyInfo then
+                        local ok, currencyInfo = pcall(C_CurrencyInfo.GetCurrencyInfo, tonumber(currencyTypeID))
+                        local iconFileID = ok and currencyInfo and (currencyInfo.iconFileID or currencyInfo.icon) or nil
+                        if iconFileID then
+                            local icon = "|T" .. tostring(iconFileID) .. ":14|t"
+                            local escapedName = tostring(name):gsub("([^%w])", "%%%1")
+                            local amountStr = tostring(amount)
+                            local amountWithComma = amountStr:reverse():gsub("(%d%d%d)", "%1,"):reverse():gsub("^,", "")
+                            text = text:gsub(amountWithComma .. "%s+" .. escapedName, amountWithComma .. " " .. icon)
+                            text = text:gsub(amountStr .. "%s+" .. escapedName, amountStr .. " " .. icon)
+                        end
+                    end
+                end
+
+                return text
+            end
+
             -- First check if cost already parsed
             if item._costBreakdown and #item._costBreakdown > 0 then
                 costDisplay = item._costBreakdown[1]
@@ -318,7 +535,7 @@ function Tooltip.AttachButton(button)
                     catalogData = HousingAPI:GetCatalogData(item.itemID)
                 end
 
-                if catalogData and (catalogData.costRaw or catalogData.cost) then
+                if (not item or not item.cost or item.cost == "") and catalogData and (catalogData.costRaw or catalogData.cost) then
                     local costStr = catalogData.costRaw or catalogData.cost
                     if type(costStr) == "string" then
                         -- If it's formatted (money/currency links), take the first entry as-is
@@ -347,6 +564,15 @@ function Tooltip.AttachButton(button)
                             costDisplay = costStr:match("([^,]+)")
                         end
                         end
+                    end
+                end
+
+                -- Static fallback (from Costs.lua / indexing) when API cost is unavailable.
+                if not costDisplay or costDisplay == "" then
+                    if item.cost and item.cost ~= "" then
+                        costDisplay = AddGoldAndCurrencyIconsFromStatic(item.cost, item._staticCostComponents)
+                    elseif item.buyPriceCopper and tonumber(item.buyPriceCopper) and tonumber(item.buyPriceCopper) > 0 and GetCoinTextureString then
+                        costDisplay = GetCoinTextureString(tonumber(item.buyPriceCopper))
                     end
                 end
             end
@@ -385,6 +611,11 @@ function Tooltip.AttachButton(button)
                         end
                     end
                 end
+
+            -- Static cost fallback (CSV enrichment), when APIs don't provide a cost string.
+            if (not costDisplay or costDisplay == "") and item.cost and item.cost ~= "" then
+                costDisplay = AddGoldAndCurrencyIconsFromStatic(item.cost, item._staticCostComponents)
+            end
 
             if costDisplay then
                 GameTooltip:AddLine("Cost: " .. costDisplay, 1, 0.82, 0, 1)
@@ -436,50 +667,59 @@ function Tooltip.AttachButton(button)
             end
             
             if achievementText and achievementText ~= "" then
-                -- Check if achievement is completed and get points
+                -- Check if achievement is completed, points, and completion date (account-wide for most achievements).
                 local achievementStatus = ""
                 local achievementPoints = nil
+                local achievementDate = nil
+                local achievementEarnedBy = nil
+                local achievementProgress = nil
                 if achievementID then
-                    local completion = HousingAPI and HousingAPI.GetAchievementCompletion and HousingAPI:GetAchievementCompletion(achievementID) or nil
-                    if completion then
-                        if completion.completed then
+                    local st = GetAchievementStatus(achievementID)
+                    if st then
+                        if st.completed then
                             achievementStatus = " |cFF00FF00(Completed)|r"
+                            if st.dateText and st.dateText ~= "" then
+                                achievementDate = st.dateText
+                            end
+                            achievementEarnedBy = st.earnedBy
                         else
                             achievementStatus = " |cFFFF0000(Not Completed)|r"
+                            achievementProgress = st.progress
                         end
-                        achievementPoints = completion.points
-                    elseif C_AchievementInfo and C_AchievementInfo.GetAchievementInfo then
-                        local ok, achInfo = pcall(C_AchievementInfo.GetAchievementInfo, achievementID)
-                        if ok and achInfo then
-                            if achInfo.completed then
-                                achievementStatus = " |cFF00FF00(Completed)|r"
-                            else
-                                achievementStatus = " |cFFFF0000(Not Completed)|r"
-                            end
-                            achievementPoints = achInfo.points
-                        end
+                        achievementPoints = st.points
                     end
                 end
-                
+                 
                 -- Build achievement text with status and points
                 local displayText = achievementText .. achievementStatus
-                if achievementPoints and achievementPoints > 0 then
-                    displayText = displayText .. " - " .. achievementPoints .. "pts"
+                if achievementDate then
+                    displayText = displayText .. " - " .. achievementDate
                 end
-                
+                -- Points omitted (low value/noisy for this addon)
+                 
                 GameTooltip:AddLine("Achievement: " .. displayText, 1, 0.5, 0, 1)
-                
-                -- Add hint for full tooltip details if we have achievement ID
-                if achievementID then
-                    GameTooltip:AddLine(" ", 1, 1, 1, 1)  -- Spacer
-                    GameTooltip:AddLine("|cFF808080(Hover over achievement name in preview panel for full details)|r", 0.5, 0.5, 0.5, true)
-                    
-                    -- Store the achievement ID for tooltip enhancement
-                    if not self._tooltipAchievementID then
-                        -- Hook to show achievement tooltip when hovering over the achievement line
-                        self._tooltipAchievementID = achievementID
+
+                if achievementEarnedBy and type(achievementEarnedBy) == "string" and achievementEarnedBy ~= "" then
+                    GameTooltip:AddLine("Earned by: " .. achievementEarnedBy, 0.7, 0.7, 0.7, 1)
+                end
+
+                if achievementProgress then
+                    if achievementProgress.type == "progress" and achievementProgress.max and achievementProgress.max > 0 then
+                        local pct = (achievementProgress.current or 0) / achievementProgress.max
+                        local r, g, b = 1, 0.65, 0.2
+                        if pct >= 1 then r, g, b = 0, 1, 0
+                        elseif pct >= 0.5 then r, g, b = 0.2, 0.6, 1 end
+                        GameTooltip:AddLine(string.format("Progress: %d / %d", achievementProgress.current or 0, achievementProgress.max), r, g, b, 1)
+                    elseif achievementProgress.type == "criteria" and achievementProgress.total and achievementProgress.total > 0 then
+                        local pct = (achievementProgress.completed or 0) / achievementProgress.total
+                        local r, g, b = 1, 0.65, 0.2
+                        if pct >= 1 then r, g, b = 0, 1, 0
+                        elseif pct >= 0.5 then r, g, b = 0.2, 0.6, 1 end
+                        GameTooltip:AddLine(string.format("Criteria: %d / %d", achievementProgress.completed or 0, achievementProgress.total), r, g, b, 1)
                     end
                 end
+                
+                -- (Preview panel already provides detailed achievement criteria on hover.)
             end
             
             -- Quest requirement (ALWAYS use Housing Catalog API - it's the authoritative source)
@@ -531,9 +771,28 @@ function Tooltip.AttachButton(button)
                 cleanQuestText = cleanQuestText:match("^%s*(.-)%s*$")
                 
                 if cleanQuestText and cleanQuestText ~= "" then
-                    -- Add quest text line
-                    GameTooltip:AddLine("Quest: " .. cleanQuestText, 0.5, 0.8, 1, 1)
-                    
+                    -- Check if quest is completed
+                    local questStatus = ""
+                    if questID then
+                        local numericQuestID = tonumber(questID)
+                        -- If questID is text, try to extract numeric ID
+                        if not numericQuestID and type(questID) == "string" then
+                            numericQuestID = tonumber(string.match(questID, "%d+"))
+                        end
+
+                        if numericQuestID and C_QuestLog and C_QuestLog.IsQuestFlaggedCompleted then
+                            local success, isComplete = pcall(C_QuestLog.IsQuestFlaggedCompleted, numericQuestID)
+                            if success and isComplete then
+                                questStatus = " |cFF00FF00(Completed)|r"
+                            elseif success and not isComplete then
+                                questStatus = " |cFFFF0000(Not Completed)|r"
+                            end
+                        end
+                    end
+
+                    -- Add quest text line with completion status
+                    GameTooltip:AddLine("Quest: " .. cleanQuestText .. questStatus, 0.5, 0.8, 1, 1)
+
                     -- If we have questID, show full quest tooltip on hover
                     if questID then
                         -- Add instruction hint
@@ -689,6 +948,93 @@ function Tooltip.AttachButton(button)
                         if bestRepCharKey then
                             GameTooltip:AddLine("Best progress on: " .. bestRepCharKey, 0.7, 0.7, 0.7, 1)
                         end
+
+                        -- Also show this character's current progress (Blizzard API), when available.
+                        if repLookup and repCfg and repLookup.factionID and repCfg.rep then
+                            local thisCharText = nil
+                            local factionID = tonumber(repLookup.factionID)
+                            local reactionNames = {"Hated", "Hostile", "Unfriendly", "Neutral", "Friendly", "Honored", "Revered", "Exalted"}
+
+                            if factionID and repCfg.rep == "standard" then
+                                if C_ReputationInfo and C_ReputationInfo.GetFactionDataByID then
+                                    local ok, fd = pcall(C_ReputationInfo.GetFactionDataByID, factionID)
+                                    if ok and fd then
+                                        local standingID = tonumber(fd.reaction or fd.standingID)
+                                        local standingText = reactionNames[standingID] or "Unknown"
+
+                                        local cur = nil
+                                        local max = nil
+                                        if fd.currentReactionThreshold and fd.nextReactionThreshold and fd.currentStanding then
+                                            max = tonumber(fd.nextReactionThreshold) - tonumber(fd.currentReactionThreshold)
+                                            cur = tonumber(fd.currentStanding) - tonumber(fd.currentReactionThreshold)
+                                        elseif fd.barMin and fd.barMax and fd.barValue then
+                                            max = tonumber(fd.barMax) - tonumber(fd.barMin)
+                                            cur = tonumber(fd.barValue) - tonumber(fd.barMin)
+                                        end
+
+                                        if max and max > 0 and cur ~= nil then
+                                            thisCharText = string.format("%s (%d/%d)", standingText, cur, max)
+                                        else
+                                            thisCharText = standingText
+                                        end
+                                    end
+                                elseif _G.GetFactionInfoByID then
+                                    local ok, _, _, standingID, barMin, barMax, barValue = pcall(_G.GetFactionInfoByID, factionID)
+                                    if ok then
+                                        local standingText = reactionNames[tonumber(standingID)] or "Unknown"
+                                        if barMin and barMax and barValue then
+                                            thisCharText = string.format("%s (%d/%d)", standingText, tonumber(barValue) - tonumber(barMin), tonumber(barMax) - tonumber(barMin))
+                                        else
+                                            thisCharText = standingText
+                                        end
+                                    end
+                                end
+                            elseif factionID and repCfg.rep == "renown" then
+                                if C_MajorFactions and C_MajorFactions.GetMajorFactionData then
+                                    local ok, mf = pcall(C_MajorFactions.GetMajorFactionData, factionID)
+                                    if ok and mf then
+                                        local lvl = tonumber(mf.renownLevel) or 0
+                                        local cur = tonumber(mf.renownReputationEarned) or nil
+                                        local max = tonumber(mf.renownLevelThreshold) or nil
+                                        if max and max > 0 and cur then
+                                            thisCharText = string.format("Renown %d (%d/%d)", lvl, cur, max)
+                                        else
+                                            thisCharText = string.format("Renown %d", lvl)
+                                        end
+                                    end
+                                end
+                            elseif factionID and repCfg.rep == "friendship" then
+                                if C_GossipInfo and C_GossipInfo.GetFriendshipReputation then
+                                    local ok, fr = pcall(C_GossipInfo.GetFriendshipReputation, factionID)
+                                    if ok and fr then
+                                        local standingText = fr.reaction or fr.reactionText or fr.standingText
+                                        if type(standingText) ~= "string" or standingText == "" then
+                                            standingText = "Unknown"
+                                        end
+                                        local cur = tonumber(fr.standing) or tonumber(fr.friendshipFactionStanding) or tonumber(fr.rep) or nil
+                                        local max = tonumber(fr.maxRep) or tonumber(fr.nextThreshold) or tonumber(fr.friendshipFactionMaxRep) or nil
+                                        if max and max > 0 and cur then
+                                            thisCharText = string.format("%s (%d/%d)", standingText, cur, max)
+                                        else
+                                            thisCharText = standingText
+                                        end
+                                    end
+                                elseif _G.GetFriendshipReputation then
+                                    local ok, _, _, standingText, barMin, barMax, barValue = pcall(_G.GetFriendshipReputation, factionID)
+                                    if ok then
+                                        if barMin and barMax and barValue then
+                                            thisCharText = string.format("%s (%d/%d)", standingText or "Unknown", tonumber(barValue) - tonumber(barMin), tonumber(barMax) - tonumber(barMin))
+                                        else
+                                            thisCharText = standingText or "Unknown"
+                                        end
+                                    end
+                                end
+                            end
+
+                            if thisCharText then
+                                GameTooltip:AddLine("This character: " .. thisCharText, 0.7, 0.7, 0.7, 1)
+                            end
+                        end
                     end
                 end
             end
@@ -743,17 +1089,18 @@ function Tooltip.AttachButton(button)
         local tooltipFont = GameTooltipText:GetFont()
         GameTooltipText:SetFont(tooltipFont or "Fonts\\FRIZQT__.TTF", 12, "")
 
-        -- Restore original colors
-        if self.originalBackdropColor then
-            self:SetBackdropColor(unpack(self.originalBackdropColor))
-        else
-            self:SetBackdropColor(bgTertiary[1], bgTertiary[2], bgTertiary[3], bgTertiary[4])
+        if not noHoverSkin then
+            -- Restore original colors
+            if self.originalBackdropColor then
+                self:SetBackdropColor(unpack(self.originalBackdropColor))
+            else
+                self:SetBackdropColor(bgTertiary[1], bgTertiary[2], bgTertiary[3], bgTertiary[4])
+            end
+            self:SetBackdropBorderColor(borderPrimary[1], borderPrimary[2], borderPrimary[3], borderPrimary[4])
         end
-        self:SetBackdropBorderColor(borderPrimary[1], borderPrimary[2], borderPrimary[3], borderPrimary[4])
 
         GameTooltip:Hide()
     end)
 end
 
 _G["HousingVendorItemListTooltip"] = Tooltip
-

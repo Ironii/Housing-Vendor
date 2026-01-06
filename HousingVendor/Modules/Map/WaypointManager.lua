@@ -7,6 +7,8 @@ local WaypointManager = {}
 WaypointManager.__index = WaypointManager
 
 local pendingDestination = nil
+local lastWaypoint = nil
+local activeWaypointContext = nil
 local eventFrame = CreateFrame("Frame")
 local lastMapID = nil
 local HUB_COORDS = { x = 0.5, y = 0.5 } -- Generic fallback when we only know a hub mapID
@@ -38,10 +40,35 @@ local function UnregisterZoneEvents()
     end
 end
 
+local function BuildMapAncestry(mapID)
+    local ancestry = {}
+    local current = mapID
+    local safety = 0
+    while current and current ~= 0 and safety < 10 do
+        ancestry[current] = true
+        if C_Map and C_Map.GetMapInfo then
+            local info = C_Map.GetMapInfo(current)
+            current = info and info.parentMapID or nil
+        else
+            current = nil
+        end
+        safety = safety + 1
+    end
+    return ancestry
+end
+
 local function GetExpansionFromMapID(mapID)
     if not mapID or mapID == 0 then return nil end
     if HousingMapIDToExpansion and HousingMapIDToExpansion[mapID] then
         return HousingMapIDToExpansion[mapID]
+    end
+    if HousingMapIDToExpansion and C_Map and C_Map.GetMapInfo then
+        local ancestry = BuildMapAncestry(mapID)
+        for ancestorID in pairs(ancestry) do
+            if HousingMapIDToExpansion[ancestorID] then
+                return HousingMapIDToExpansion[ancestorID]
+            end
+        end
     end
     return nil
 end
@@ -124,12 +151,16 @@ local function FindPortalForExpansion(currentMapID, destinationExpansion, destin
     -- Get player faction for filtering
     local playerFaction = UnitFactionGroup("player")
 
+    local ancestry = BuildMapAncestry(currentMapID)
+
     -- Find portals in the current zone
     local currentZonePortals = nil
     for zoneName, portals in pairs(HousingPortalData) do
         if portals and #portals > 0 then
             for _, portal in ipairs(portals) do
-                if portal.mapID == currentMapID then
+                local portalMapID = portal.mapID
+                local portalZoneMapID = portal.zoneMapID
+                if (portalMapID and ancestry[portalMapID]) or (portalZoneMapID and ancestry[portalZoneMapID]) then
                     currentZonePortals = portals
                     break
                 end
@@ -224,10 +255,15 @@ local function FindPortalToDestinationMap(currentMapID, destinationMapID)
 
     local playerFaction = UnitFactionGroup("player")
 
+    local ancestry = BuildMapAncestry(currentMapID)
+
     for _, portals in pairs(HousingPortalData) do
         if portals and type(portals) == "table" then
             for _, portal in ipairs(portals) do
-                if portal.mapID == currentMapID and (portal.destinationMapID == destinationMapID or portal.destMapID == destinationMapID) then
+                local portalMapID = portal.mapID
+                local portalZoneMapID = portal.zoneMapID
+                local matchesZone = (portalMapID and ancestry[portalMapID]) or (portalZoneMapID and ancestry[portalZoneMapID])
+                if matchesZone and (portal.destinationMapID == destinationMapID or portal.destMapID == destinationMapID) then
                     if portal.name and playerFaction == "Alliance" and (portal.name:find("Orgrimmar") or portal.name:find("Horde") or portal.name:find("Durotar")) then
                         -- Skip opposing faction portals
                     elseif portal.name and playerFaction == "Horde" and (portal.name:find("Stormwind") or portal.name:find("Alliance") or portal.name:find("Elwynn")) then
@@ -405,6 +441,19 @@ local function GetNearestFlightPoint(destinationMapID, destX, destY)
     return nearestNode
 end
 
+local function SetLastWaypoint(mapID, x, y, name, npcID)
+    if not mapID or not x or not y then
+        return
+    end
+    lastWaypoint = {
+        mapID = mapID,
+        x = x,
+        y = y,
+        name = name,
+        npcID = npcID,
+    }
+end
+
 local function SetBlizzardWaypoint(mapID, x, y)
     if not C_Map or not C_Map.SetUserWaypoint then
         return false, "Blizzard map API not available"
@@ -437,6 +486,9 @@ local function SetBlizzardWaypoint(mapID, x, y)
         return false, tostring(err)
     end
 
+    SetLastWaypoint(mapID, x, y,
+        (activeWaypointContext and activeWaypointContext.name) or nil,
+        (activeWaypointContext and activeWaypointContext.npcID) or nil)
     return true, nil
 end
 local function SetTomTomWaypoint(mapID, x, y, title)
@@ -466,6 +518,9 @@ local function SetTomTomWaypoint(mapID, x, y, title)
         return false, tostring(err)
     end
 
+    SetLastWaypoint(mapID, x, y,
+        (activeWaypointContext and activeWaypointContext.name) or title,
+        (activeWaypointContext and activeWaypointContext.npcID) or nil)
     return true, nil
 end
 function WaypointManager:SetWaypoint(item)
@@ -521,6 +576,7 @@ function WaypointManager:SetWaypoint(item)
             vendorName = item.vendorName or item._apiVendor  -- Prioritize hardcoded data over API
         end
 
+        activeWaypointContext = { name = vendorName or locationName, npcID = item.npcID }
         local blizzardSuccess = SetBlizzardWaypoint(effectiveMapID, x, y, vendorName)
         local tomtomSuccess = SetTomTomWaypoint(effectiveMapID, x, y, vendorName or locationName)
 
@@ -548,6 +604,7 @@ function WaypointManager:SetWaypoint(item)
     end
 
     local locationName = vendorName or item.name or zoneName or "location"
+    activeWaypointContext = { name = vendorName or locationName, npcID = item.npcID }
     local currentExpansion = GetExpansionFromMapID(currentMapID)
     
     -- Try to get expansion from mapID first, fallback to item.expansionName
@@ -940,6 +997,7 @@ end
 function WaypointManager:ClearPendingDestination()
     if pendingDestination then
         pendingDestination = nil
+        lastWaypoint = nil
         UnregisterZoneEvents()
         return true
     end
@@ -949,11 +1007,46 @@ end
 
 function WaypointManager:ClearWaypoint()
     pendingDestination = nil
+    lastWaypoint = nil
     UnregisterZoneEvents()
 end
 
 function WaypointManager:HasPendingDestination()
     return pendingDestination ~= nil
+end
+
+function WaypointManager:GetActiveWaypointInfo()
+    return lastWaypoint
+end
+
+function WaypointManager:GetActiveWaypointDistance()
+    if not lastWaypoint or not lastWaypoint.mapID then
+        return nil, "No waypoint"
+    end
+
+    if not (C_Map and C_Map.GetBestMapForUnit and C_Map.GetPlayerMapPosition) then
+        return nil, "No map"
+    end
+
+    local playerMapID = C_Map.GetBestMapForUnit("player")
+    if not playerMapID then
+        return nil, "No map"
+    end
+
+    if playerMapID ~= lastWaypoint.mapID then
+        return nil, "Different zone"
+    end
+
+    local pos = C_Map.GetPlayerMapPosition(lastWaypoint.mapID, "player")
+    if not pos or not pos.x or not pos.y or (pos.x == 0 and pos.y == 0) then
+        return nil, "Unknown"
+    end
+
+    local px, py = pos.x * 100, pos.y * 100
+    local tx, ty = lastWaypoint.x * 100, lastWaypoint.y * 100
+    local dx = px - tx
+    local dy = py - ty
+    return math.sqrt(dx * dx + dy * dy) * 1.25
 end
 
 local function OnZoneChanged()

@@ -60,6 +60,9 @@ function StatisticsUI:CalculateStats()
             vendorsByExpansion = {}
         },
 
+        -- Vendor-level breakdown (vendor items only)
+        byVendor = {},
+
         -- Price statistics
         totalValue = {gold = 0, items = 0},
         collectedValue = {gold = 0, items = 0},
@@ -99,8 +102,101 @@ function StatisticsUI:CalculateStats()
             questsIncomplete = 0,
             itemsFromQuests = 0,
             byExpansion = {}
-        }
+        },
+
+        -- "Unlocked" but not collected yet (requirements met via quest/achievement)
+        readyMissing = 0,
+        lockedMissing = 0,
+        readyBy = {Achievement = 0, Quest = 0},
+        readyItems = {}
     }
+
+    local achievementCompletion = {}
+    local achievementInfoCache = {}
+    local questCompletion = {}
+
+    local function FormatAchievementDate(month, day, year)
+        month = tonumber(month)
+        day = tonumber(day)
+        year = tonumber(year)
+        if not month or not day or not year then return nil end
+        if month < 1 or month > 12 then return nil end
+        if day < 1 or day > 31 then return nil end
+        if year > 0 and year < 100 then
+            year = 2000 + year
+        end
+        if year < 1900 then return nil end
+        return string.format("%02d/%02d/%04d", month, day, year)
+    end
+
+    local function GetAchievementDateText(achInfo)
+        if type(achInfo) ~= "table" then return nil end
+        if achInfo.dateCompleted and type(achInfo.dateCompleted) == "string" and achInfo.dateCompleted ~= "" then
+            return achInfo.dateCompleted
+        end
+        return FormatAchievementDate(achInfo.month, achInfo.day, achInfo.year)
+    end
+
+    local function GetAchievementInfoCached(achievementID)
+        local cached = achievementInfoCache[achievementID]
+        if cached ~= nil then
+            return cached
+        end
+
+        local info = nil
+        if C_AchievementInfo and C_AchievementInfo.GetAchievementInfo then
+            local ok, result = pcall(C_AchievementInfo.GetAchievementInfo, achievementID)
+            if ok then
+                info = result
+            end
+        end
+
+        achievementInfoCache[achievementID] = info
+        return info
+    end
+
+    local function IsAchievementCompleted(achievementID)
+        local cached = achievementCompletion[achievementID]
+        if cached ~= nil then
+            local info = GetAchievementInfoCached(achievementID)
+            local dateText = nil
+            if cached then
+                dateText = GetAchievementDateText(info)
+            end
+            return cached, info, dateText
+        end
+
+        local completed = false
+        local info = GetAchievementInfoCached(achievementID)
+        if type(info) == "table" and info.completed ~= nil then
+            completed = info.completed and true or false
+        end
+
+        achievementCompletion[achievementID] = completed
+        local dateText = nil
+        if completed then
+            dateText = GetAchievementDateText(info)
+        end
+        return completed, info, dateText
+    end
+
+    local function IsQuestCompleted(questID)
+        local cached = questCompletion[questID]
+        if cached ~= nil then
+            return cached
+        end
+
+        local completed = false
+        if C_QuestLog and C_QuestLog.IsQuestFlaggedCompleted then
+            local ok, isCompleted = pcall(C_QuestLog.IsQuestFlaggedCompleted, questID)
+            if ok then
+                completed = isCompleted and true or false
+            end
+        end
+
+        questCompletion[questID] = completed
+        return completed
+    end
     
     for _, item in ipairs(allItems) do
         local itemID = tonumber(item.itemID)
@@ -134,6 +230,32 @@ function StatisticsUI:CalculateStats()
             sourceType = "Quest"
         elseif item.dropSource and item.dropSource ~= "" then
             sourceType = "Drop"
+        end
+
+        local goldValue = (item.price and item.price > 0) and item.price or 0
+
+        -- Determine whether the item is "unlocked" (requirements met) even if not collected yet.
+        -- This is intentionally separate from "collected", because some requirements are account-wide.
+        local hasRequirement = false
+        local isUnlocked = true
+        local unlockedByAchievement = nil
+        local unlockedByQuest = nil
+        local unlockedAchievementDate = nil
+
+        if item._achievementId then
+            hasRequirement = true
+            local completed, _, dateText = IsAchievementCompleted(item._achievementId)
+            unlockedByAchievement = completed
+            unlockedAchievementDate = dateText
+            isUnlocked = isUnlocked and unlockedByAchievement
+        end
+        if item._questId then
+            hasRequirement = true
+            unlockedByQuest = IsQuestCompleted(item._questId)
+            isUnlocked = isUnlocked and unlockedByQuest
+        end
+        if not hasRequirement then
+            isUnlocked = true
         end
 
         -- Update source stats
@@ -338,6 +460,83 @@ function StatisticsUI:CalculateStats()
             end
         end
 
+        -- Track vendor-level stats (vendor items only)
+        if sourceType == "Vendor" and zoneName and zoneName ~= "" and vendorName and vendorName ~= "" then
+            local vendorKey = zoneName .. "||" .. vendorName
+            local vendorStats = stats.byVendor[vendorKey]
+            if not vendorStats then
+                vendorStats = {
+                    vendor = vendorName,
+                    zone = zoneName,
+                    total = 0,
+                    collected = 0,
+                    missing = 0,
+                    missingValue = 0,
+                    freeMissing = 0,
+                    cheapMissing = 0
+                }
+                stats.byVendor[vendorKey] = vendorStats
+            end
+
+            vendorStats.total = vendorStats.total + 1
+            if isCollected then
+                vendorStats.collected = vendorStats.collected + 1
+            else
+                vendorStats.missing = vendorStats.missing + 1
+                vendorStats.missingValue = vendorStats.missingValue + goldValue
+                if goldValue == 0 then
+                    vendorStats.freeMissing = vendorStats.freeMissing + 1
+                elseif goldValue <= 50 then
+                    vendorStats.cheapMissing = vendorStats.cheapMissing + 1
+                end
+            end
+        end
+
+        -- Track "ready to collect" vs "locked" for items you don't own yet.
+        if not isCollected and hasRequirement then
+            if isUnlocked then
+                stats.readyMissing = stats.readyMissing + 1
+                if unlockedByAchievement then
+                    stats.readyBy.Achievement = stats.readyBy.Achievement + 1
+                end
+                if unlockedByQuest then
+                    stats.readyBy.Quest = stats.readyBy.Quest + 1
+                end
+
+                if #stats.readyItems < 30 then
+                    local itemZoneName = nil
+                    if _G.HousingVendorHelper then
+                        itemZoneName = _G.HousingVendorHelper:GetZoneName(item, nil)
+                    else
+                        itemZoneName = item._apiZone or item.zoneName
+                    end
+
+                    local reason = nil
+                    if unlockedByAchievement and unlockedByQuest then
+                        reason = "Achievement + Quest"
+                    elseif unlockedByAchievement then
+                        reason = "Achievement"
+                    elseif unlockedByQuest then
+                        reason = "Quest"
+                    else
+                        reason = "Unlocked"
+                    end
+
+                    table.insert(stats.readyItems, {
+                        name = item.name,
+                        source = sourceType,
+                        zone = itemZoneName,
+                        price = goldValue,
+                        currency = item.currency,
+                        reason = reason,
+                        achievementDate = unlockedAchievementDate,
+                    })
+                end
+            else
+                stats.lockedMissing = stats.lockedMissing + 1
+            end
+        end
+
         -- Track by currency type
         if item.currency and item.currency ~= "" then
             local currencyName = item.currency
@@ -353,7 +552,6 @@ function StatisticsUI:CalculateStats()
         end
 
         -- Track value and price ranges
-        local goldValue = (item.price and item.price > 0) and item.price or 0
         if goldValue > 0 then
             stats.totalValue.gold = stats.totalValue.gold + goldValue
             stats.totalValue.items = stats.totalValue.items + 1
@@ -443,9 +641,9 @@ function StatisticsUI:CalculateStats()
                 stats.achievementStats.totalAchievements = stats.achievementStats.totalAchievements + 1
                 
                 -- Get achievement info from API
-                if C_AchievementInfo and C_AchievementInfo.GetAchievementInfo then
-                    local ok, achInfo = pcall(C_AchievementInfo.GetAchievementInfo, achievementID)
-                    if ok and achInfo then
+                do
+                    local achInfo = GetAchievementInfoCached(achievementID)
+                    if achInfo then
                         -- Track points
                         if achInfo.points then
                             stats.achievementStats.totalPoints = stats.achievementStats.totalPoints + achInfo.points
@@ -478,7 +676,7 @@ function StatisticsUI:CalculateStats()
                         if achInfo.points then
                             stats.achievementStats.byExpansion[expName].points = stats.achievementStats.byExpansion[expName].points + achInfo.points
                             if achInfo.completed then
-                                stats.achievementStats.byExpansion[expName].earnedPoints = stats.achievementStats.byExpansion[expName].earnedPoints + achInfo.points
+                            stats.achievementStats.byExpansion[expName].earnedPoints = stats.achievementStats.byExpansion[expName].earnedPoints + achInfo.points
                             end
                         end
                     end
@@ -499,28 +697,24 @@ function StatisticsUI:CalculateStats()
                 stats.questStats.totalQuests = stats.questStats.totalQuests + 1
                 
                 -- Check quest completion
-                if C_QuestLog and C_QuestLog.IsQuestFlaggedCompleted then
-                    local ok, isCompleted = pcall(C_QuestLog.IsQuestFlaggedCompleted, questID)
-                    if ok then
-                        if isCompleted then
-                            stats.questStats.questsCompleted = stats.questStats.questsCompleted + 1
-                        else
-                            stats.questStats.questsIncomplete = stats.questStats.questsIncomplete + 1
-                        end
-                        
-                        -- Track by expansion
-                        local expName = item.expansionName or "Other"
-                        if not stats.questStats.byExpansion[expName] then
-                            stats.questStats.byExpansion[expName] = {
-                                total = 0,
-                                completed = 0
-                            }
-                        end
-                        stats.questStats.byExpansion[expName].total = stats.questStats.byExpansion[expName].total + 1
-                        if isCompleted then
-                            stats.questStats.byExpansion[expName].completed = stats.questStats.byExpansion[expName].completed + 1
-                        end
-                    end
+                local isCompleted = IsQuestCompleted(questID)
+                if isCompleted then
+                    stats.questStats.questsCompleted = stats.questStats.questsCompleted + 1
+                else
+                    stats.questStats.questsIncomplete = stats.questStats.questsIncomplete + 1
+                end
+                
+                -- Track by expansion
+                local expName = item.expansionName or "Other"
+                if not stats.questStats.byExpansion[expName] then
+                    stats.questStats.byExpansion[expName] = {
+                        total = 0,
+                        completed = 0
+                    }
+                end
+                stats.questStats.byExpansion[expName].total = stats.questStats.byExpansion[expName].total + 1
+                if isCompleted then
+                    stats.questStats.byExpansion[expName].completed = stats.questStats.byExpansion[expName].completed + 1
                 end
             end
             

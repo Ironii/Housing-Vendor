@@ -17,8 +17,9 @@ local table_insert = table.insert
 local string_lower = string.lower
 local string_match = string.match
 
-local Housing = _G.Housing or {}
-_G.Housing = Housing
+-- Avoid using generic globals like `_G.Housing` (can collide with Blizzard UI / other addons).
+local Housing = _G.HousingVendorAddon or {}
+_G.HousingVendorAddon = Housing
 
 Housing._apiDumpState = Housing._apiDumpState or {
     running = false,

@@ -276,6 +276,10 @@ function PreviewPanelData:ShowItem(previewFrame, item)
     self:DisplayRequirements(previewFrame, item, catalogData)
     self:Display3DModel(previewFrame, item, catalogData)
 
+    if previewFrame.RelayoutProfessionAndRequirements then
+        pcall(previewFrame.RelayoutProfessionAndRequirements, previewFrame)
+    end
+
     -- Cost/vendor info can be delayed right after login/reload; retry briefly for the currently displayed item.
     if C_Timer and C_Timer.After and numericItemID then
         local maxAttempts = 3
@@ -295,6 +299,9 @@ function PreviewPanelData:ShowItem(previewFrame, item)
             local refreshed = self:GetCatalogData(numericItemID)
             item._catalogData = refreshed
             self:DisplayVendorInfo(previewFrame, item, refreshed)
+            if previewFrame.RelayoutProfessionAndRequirements then
+                pcall(previewFrame.RelayoutProfessionAndRequirements, previewFrame)
+            end
 
             if NeedsVendorCostRetry() then
                 C_Timer.After(0.8, function()

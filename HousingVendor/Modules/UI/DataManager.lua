@@ -26,6 +26,9 @@ DataManager._state = {
     -- Pre-allocated tables for FilterItems (performance optimization)
     filteredResults = {},
     debugCounts = {},
+
+    -- UI lifecycle (used to gate background work)
+    uiActive = false,
 }
 
 DataManager.Constants = DataManager.Constants or {}
@@ -68,6 +71,20 @@ function DataManager:GetFilterOptions()
             self:GetAllItems() -- Legacy fallback
         end
     end
+    -- Return empty arrays if cache is still nil (data not loaded yet)
+    if not self._state.filterOptionsCache then
+        return {
+            expansions = {},
+            vendors = {},
+            zones = {},
+            types = {},
+            categories = {},
+            factions = {},
+            sources = {},
+            qualities = {},
+            requirements = {},
+        }
+    end
     return self._state.filterOptionsCache
 end
 
@@ -94,10 +111,21 @@ function DataManager:ClearCache()
     self._state._nameCache = nil
     self._state._itemRecordCache = nil
     self._state._itemRecordCacheCount = 0
+    self._state.uiActive = false
+    self._state._qualityRetryAt = nil
+    self._state._lastQualityWarmKick = nil
 
     if self.Util and self.Util.ClearApiDataCache then
         self.Util.ClearApiDataCache()
     end
+end
+
+function DataManager:SetUIActive(active)
+    self._state.uiActive = active == true
+end
+
+function DataManager:IsUIActive()
+    return self._state.uiActive == true
 end
 
 -- Invalidate filter cache (call when collection status changes)

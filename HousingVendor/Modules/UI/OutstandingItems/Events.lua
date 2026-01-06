@@ -1,5 +1,3 @@
--- OutstandingItems Sub-module: Event handling
--- Part of HousingOutstandingItemsUI
 
 local _G = _G
 local OutstandingItemsUI = _G["HousingOutstandingItemsUI"]
@@ -8,6 +6,12 @@ if not OutstandingItemsUI then return end
 local function IsInNonWorldInstance()
     if not IsInInstance then return false end
     local inInstance, instanceType = IsInInstance()
+    if inInstance and C_Map and C_Map.GetBestMapForUnit then
+        local mapID = C_Map.GetBestMapForUnit("player")
+        if mapID == 2351 or mapID == 2352 then
+            return false
+        end
+    end
     return inInstance and instanceType and instanceType ~= "none"
 end
 
@@ -23,6 +27,8 @@ local function EnsureEventFrame()
     if not eventFrame then
         eventFrame = CreateFrame("Frame")
         OutstandingItemsUI._eventFrame = eventFrame
+        OutstandingItemsUI._zoneCheckToken = 0
+        OutstandingItemsUI._zoneCheckInFlight = false
 
         eventFrame:SetScript("OnEvent", function(_, event)
             if event == "PLAYER_ENTERING_WORLD" or event == "PLAYER_DIFFICULTY_CHANGED" or event == "ZONE_CHANGED_NEW_AREA" then
@@ -31,38 +37,38 @@ local function EnsureEventFrame()
                     return
                 end
             end
+            -- Debounce zone checks and avoid repeated retry loops (keeps idle CPU near-zero).
+            OutstandingItemsUI._zoneCheckToken = (tonumber(OutstandingItemsUI._zoneCheckToken) or 0) + 1
+            local token = OutstandingItemsUI._zoneCheckToken
 
-            local function TryZoneCheck(attempt)
-                if attempt > 10 then
+            -- TAINT FIX: Use longer delay for PLAYER_ENTERING_WORLD to allow Housing APIs to initialize
+            local delay = (event == "PLAYER_ENTERING_WORLD") and 1 or 0.2
+            C_Timer.After(delay, function()
+                if token ~= OutstandingItemsUI._zoneCheckToken then
                     return
                 end
+                if OutstandingItemsUI._zoneCheckInFlight then
+                    return
+                end
+                OutstandingItemsUI._zoneCheckInFlight = true
 
-                local zoneMapID, zone = OutstandingItemsUI:GetCurrentZone()
-
-                local hasData = false
-                if HousingDataManager and HousingDataManager.HasIndexCache then
-                    hasData = HousingDataManager:HasIndexCache()
+                local function Done()
+                    OutstandingItemsUI._zoneCheckInFlight = false
                 end
 
-                if not hasData and HousingDB and HousingDB.settings and HousingDB.settings.showOutstandingPopup then
-                    if HousingDataManager and HousingDataManager.GetAllItemIDs then
-                        pcall(function() HousingDataManager:GetAllItemIDs() end)
-                        hasData = HousingDataManager:HasIndexCache()
-                    end
-                end
-
-                if (not zoneMapID and not zone) or not hasData then
-                    C_Timer.After(1, function()
-                        TryZoneCheck(attempt + 1)
+                if HousingDataLoader and HousingDataLoader.EnsureDataLoaded then
+                    HousingDataLoader:EnsureDataLoaded(function()
+                        if token ~= OutstandingItemsUI._zoneCheckToken then
+                            Done()
+                            return
+                        end
+                        OutstandingItemsUI:OnZoneChanged()
+                        Done()
                     end)
-                    return
+                else
+                    OutstandingItemsUI:OnZoneChanged()
+                    Done()
                 end
-
-                OutstandingItemsUI:OnZoneChanged()
-            end
-
-            C_Timer.After(2, function()
-                TryZoneCheck(1)
             end)
         end)
     end
@@ -90,18 +96,21 @@ function OutstandingItemsUI:OnZoneChanged()
 
     if HousingDB and HousingDB.settings and HousingDB.settings.autoFilterByZone then
         if zoneName and HousingFilters and HousingFilters.SetZoneFilter then
-            HousingFilters:SetZoneFilter(zoneName)
+            HousingFilters:SetZoneFilter(zoneName, mapID)
         end
     end
 
     if HousingDB and HousingDB.settings and HousingDB.settings.showOutstandingPopup then
         if zoneKey ~= self._lastPopupZoneKey then
-            local outstanding = self:GetOutstandingItemsForZone(mapID, zoneName)
-            if outstanding and outstanding.total and outstanding.total > 0 then
-                self._lastPopupZoneKey = zoneKey
-                print("|cFF8A7FD4HousingVendor:|r Found " .. outstanding.total .. " uncollected items in " .. (zoneName or "this zone"))
-                self:ShowPopup(zoneName or "Current Zone", outstanding)
-            end
+            -- Wait 1 second for collection APIs to fully load
+            C_Timer.After(1, function()
+                local outstanding = self:GetOutstandingItemsForZone(mapID, zoneName)
+                if outstanding and outstanding.total and outstanding.total > 0 then
+                    self._lastPopupZoneKey = zoneKey
+                    print("|cFF8A7FD4HousingVendor:|r Found " .. outstanding.total .. " uncollected items in " .. (zoneName or "this zone"))
+                    self:ShowPopup(zoneName or "Current Zone", outstanding)
+                end
+            end)
         end
     end
 end
@@ -111,6 +120,28 @@ function OutstandingItemsUI:StartEventHandlers()
     frame:RegisterEvent("ZONE_CHANGED_NEW_AREA")
     frame:RegisterEvent("PLAYER_ENTERING_WORLD")
     frame:RegisterEvent("PLAYER_DIFFICULTY_CHANGED")
+
+    if not self._initialZoneCheckScheduled then
+        self._initialZoneCheckScheduled = true
+        C_Timer.After(1, function()
+            if HousingDataLoader and HousingDataLoader.EnsureDataLoaded then
+                HousingDataLoader:EnsureDataLoaded(function()
+                    OutstandingItemsUI:OnZoneChanged()
+                end)
+            else
+                OutstandingItemsUI:OnZoneChanged()
+            end
+        end)
+    end
+
+    if not self._initialZoneRetryScheduled then
+        self._initialZoneRetryScheduled = true
+        C_Timer.After(5, function()
+            if HousingDB and HousingDB.settings and HousingDB.settings.showOutstandingPopup then
+                OutstandingItemsUI:OnZoneChanged()
+            end
+        end)
+    end
 end
 
 function OutstandingItemsUI:StopEventHandlers()
@@ -118,7 +149,8 @@ function OutstandingItemsUI:StopEventHandlers()
     if frame then
         frame:UnregisterAllEvents()
     end
+    self._initialZoneCheckScheduled = nil
+    self._initialZoneRetryScheduled = nil
 end
 
 return OutstandingItemsUI
-

@@ -34,8 +34,14 @@ local function InferFactionFromText(text) return Util.InferFactionFromText and U
 -- API-only vendor mode - static VendorLocations fallbacks disabled for accuracy
 local USE_STATIC_VENDOR_LOCATIONS = false
 
+function DataManager:CancelBatchLoads()
+    state._batchCancelToken = (tonumber(state._batchCancelToken) or 0) + 1
+    state.batchLoadInProgress = false
+end
+
 -- Batch load API data for all items (50 items at a time)
 function DataManager:BatchLoadAPIData(allItems, filterOptions)
+    local token = (tonumber(state._batchCancelToken) or 0)
     local itemsToLoad = {}
 
     -- Collect items that need API data loaded
@@ -59,6 +65,10 @@ function DataManager:BatchLoadAPIData(allItems, filterOptions)
     local currentBatch = 1
 
     local function ProcessBatch(startIndex)
+        if (tonumber(state._batchCancelToken) or 0) ~= token then
+            state.batchLoadInProgress = false
+            return
+        end
         local endIndex = math.min(startIndex + batchSize - 1, #itemsToLoad)
         local apiDataCache = GetApiDataCache()
         local wroteAny = false
@@ -305,7 +315,7 @@ end
 
 -- Batch load API data for a list of numeric itemIDs (low-overhead mode).
 -- This populates the session API cache used by ID-based filtering (quality/type/category/etc).
-function DataManager:BatchLoadAPIDataForItemIDs(itemIDs, onComplete)
+function DataManager:BatchLoadAPIDataForItemIDs(itemIDs, onComplete, opts)
     if type(itemIDs) ~= "table" or #itemIDs == 0 then
         if type(onComplete) == "function" then
             pcall(onComplete, true)
@@ -317,6 +327,11 @@ function DataManager:BatchLoadAPIDataForItemIDs(itemIDs, onComplete)
         return
     end
     state.batchLoadInProgress = true
+
+    local token = (tonumber(state._batchCancelToken) or 0)
+
+    opts = opts or {}
+    local qualityOnly = opts.qualityOnly == true
 
     local itemsToLoad = {}
     local apiDataCache = GetApiDataCache()
@@ -338,6 +353,13 @@ function DataManager:BatchLoadAPIDataForItemIDs(itemIDs, onComplete)
     local batchSize = 50
 
     local function ProcessBatch(startIndex)
+        if (tonumber(state._batchCancelToken) or 0) ~= token then
+            state.batchLoadInProgress = false
+            if type(onComplete) == "function" then
+                pcall(onComplete, false)
+            end
+            return
+        end
         local endIndex = math.min(startIndex + batchSize - 1, #itemsToLoad)
         local apiDataCache = GetApiDataCache()
         local wroteAny = false
@@ -345,80 +367,95 @@ function DataManager:BatchLoadAPIDataForItemIDs(itemIDs, onComplete)
         for i = startIndex, endIndex do
             local itemID = itemsToLoad[i]
             if itemID and not apiDataCache[itemID] then
-                local apiExpansion = HousingAPICache and HousingAPICache.GetExpansion and HousingAPICache:GetExpansion(itemID) or nil
                 local catalogData = HousingAPICache and HousingAPICache.GetCatalogData and HousingAPICache:GetCatalogData(itemID) or (HousingAPI and HousingAPI.GetCatalogData and HousingAPI:GetCatalogData(itemID)) or nil
-
-                local apiVendor, apiZone, apiCost, apiCoords, apiMapID = nil, nil, nil, nil, nil
-                local baseInfo = HousingAPI and HousingAPI.GetDecorItemInfoFromItemID and HousingAPI:GetDecorItemInfoFromItemID(itemID) or nil
-                if baseInfo and baseInfo.decorID then
-                    local vendorInfo = nil
-                    if HousingAPICache and HousingAPICache.GetVendorInfo then
-                        vendorInfo = HousingAPICache:GetVendorInfo(baseInfo.decorID)
-                    elseif HousingAPI and HousingAPI.GetDecorVendorInfo then
-                        vendorInfo = HousingAPI:GetDecorVendorInfo(baseInfo.decorID)
-                    end
-                    if vendorInfo then
-                        apiVendor = vendorInfo.name
-                        apiZone = vendorInfo.zone
-                        if vendorInfo.cost and #vendorInfo.cost > 0 then
-                            apiCost = vendorInfo.cost
-                        end
-                        if vendorInfo.coords and vendorInfo.coords.x and vendorInfo.coords.y then
-                            apiCoords = vendorInfo.coords
-                        end
-                        if vendorInfo.mapID then
-                            apiMapID = vendorInfo.mapID
-                        end
-                    end
-                end
-
-                local requirementType = "None"
-                if catalogData then
-                    if catalogData.achievement or catalogData.achievementID then
-                        requirementType = "Achievement"
-                    elseif catalogData.quest or catalogData.questID then
-                        requirementType = "Quest"
-                    elseif catalogData.reputation then
-                        requirementType = "Reputation"
-                    elseif catalogData.renown then
-                        requirementType = "Renown"
-                    elseif catalogData.profession then
-                        requirementType = "Profession"
-                    elseif catalogData.event then
-                        requirementType = "Event"
-                    elseif catalogData.class then
-                        requirementType = "Class"
-                    elseif catalogData.race then
-                        requirementType = "Race"
-                    end
-                end
-
                 local qualityValue = catalogData and catalogData.quality
                 local qualityName = qualityValue and QUALITY_NAMES[qualityValue] or nil
 
-                apiDataCache[itemID] = {
-                    expansion = apiExpansion,
-                    category = catalogData and catalogData.categoryNames and catalogData.categoryNames[1] or nil,
-                    subcategory = catalogData and catalogData.subcategoryNames and catalogData.subcategoryNames[1] or nil,
-                    vendor = apiVendor,
-                    zone = apiZone,
-                    cost = apiCost,
-                    coords = apiCoords,
-                    mapID = apiMapID,
-                    asset = catalogData and catalogData.asset or nil,
-                    quality = qualityValue,
-                    qualityName = qualityName,
-                    requirementType = requirementType,
-                    numStored = catalogData and catalogData.numStored or 0,
-                    numPlaced = catalogData and catalogData.numPlaced or 0,
-                    achievement = catalogData and catalogData.achievement or nil,
-                    achievementID = catalogData and catalogData.achievementID or nil,
-                    sourceText = catalogData and catalogData.sourceText or nil,
-                    recordID = catalogData and catalogData.recordID or nil,
-                    entryType = catalogData and catalogData.entryType or nil,
-                }
-                wroteAny = true
-                TouchApiDataCacheItem(itemID)
+                if qualityOnly then
+                    -- Don't cache "unknown" quality; it would block future retries.
+                    if qualityValue ~= nil then
+                        apiDataCache[itemID] = {
+                            quality = qualityValue,
+                            qualityName = qualityName,
+                        }
+                        wroteAny = true
+                        TouchApiDataCacheItem(itemID)
+                    else
+                        state._qualityRetryAt = state._qualityRetryAt or {}
+                        state._qualityRetryAt[itemID] = (GetTime and GetTime() or 0) + 30
+                    end
+                else
+                    local apiExpansion = HousingAPICache and HousingAPICache.GetExpansion and HousingAPICache:GetExpansion(itemID) or nil
+
+                    local apiVendor, apiZone, apiCost, apiCoords, apiMapID = nil, nil, nil, nil, nil
+                    local baseInfo = HousingAPI and HousingAPI.GetDecorItemInfoFromItemID and HousingAPI:GetDecorItemInfoFromItemID(itemID) or nil
+                    if baseInfo and baseInfo.decorID then
+                        local vendorInfo = nil
+                        if HousingAPICache and HousingAPICache.GetVendorInfo then
+                            vendorInfo = HousingAPICache:GetVendorInfo(baseInfo.decorID)
+                        elseif HousingAPI and HousingAPI.GetDecorVendorInfo then
+                            vendorInfo = HousingAPI:GetDecorVendorInfo(baseInfo.decorID)
+                        end
+                        if vendorInfo then
+                            apiVendor = vendorInfo.name
+                            apiZone = vendorInfo.zone
+                            if vendorInfo.cost and #vendorInfo.cost > 0 then
+                                apiCost = vendorInfo.cost
+                            end
+                            if vendorInfo.coords and vendorInfo.coords.x and vendorInfo.coords.y then
+                                apiCoords = vendorInfo.coords
+                            end
+                            if vendorInfo.mapID then
+                                apiMapID = vendorInfo.mapID
+                            end
+                        end
+                    end
+
+                    local requirementType = "None"
+                    if catalogData then
+                        if catalogData.achievement or catalogData.achievementID then
+                            requirementType = "Achievement"
+                        elseif catalogData.quest or catalogData.questID then
+                            requirementType = "Quest"
+                        elseif catalogData.reputation then
+                            requirementType = "Reputation"
+                        elseif catalogData.renown then
+                            requirementType = "Renown"
+                        elseif catalogData.profession then
+                            requirementType = "Profession"
+                        elseif catalogData.event then
+                            requirementType = "Event"
+                        elseif catalogData.class then
+                            requirementType = "Class"
+                        elseif catalogData.race then
+                            requirementType = "Race"
+                        end
+                    end
+
+                    apiDataCache[itemID] = {
+                        expansion = apiExpansion,
+                        category = catalogData and catalogData.categoryNames and catalogData.categoryNames[1] or nil,
+                        subcategory = catalogData and catalogData.subcategoryNames and catalogData.subcategoryNames[1] or nil,
+                        vendor = apiVendor,
+                        zone = apiZone,
+                        cost = apiCost,
+                        coords = apiCoords,
+                        mapID = apiMapID,
+                        asset = catalogData and catalogData.asset or nil,
+                        quality = qualityValue,
+                        qualityName = qualityName,
+                        requirementType = requirementType,
+                        numStored = catalogData and catalogData.numStored or 0,
+                        numPlaced = catalogData and catalogData.numPlaced or 0,
+                        achievement = catalogData and catalogData.achievement or nil,
+                        achievementID = catalogData and catalogData.achievementID or nil,
+                        sourceText = catalogData and catalogData.sourceText or nil,
+                        recordID = catalogData and catalogData.recordID or nil,
+                        entryType = catalogData and catalogData.entryType or nil,
+                    }
+                    wroteAny = true
+                    TouchApiDataCacheItem(itemID)
+                end
             end
         end
 
@@ -428,6 +465,13 @@ function DataManager:BatchLoadAPIDataForItemIDs(itemIDs, onComplete)
 
         if endIndex < #itemsToLoad then
             C_Timer.After(0.01, function()
+                if (tonumber(state._batchCancelToken) or 0) ~= token then
+                    state.batchLoadInProgress = false
+                    if type(onComplete) == "function" then
+                        pcall(onComplete, false)
+                    end
+                    return
+                end
                 ProcessBatch(endIndex + 1)
             end)
         else
@@ -439,6 +483,13 @@ function DataManager:BatchLoadAPIDataForItemIDs(itemIDs, onComplete)
     end
 
     C_Timer.After(0.01, function()
+        if (tonumber(state._batchCancelToken) or 0) ~= token then
+            state.batchLoadInProgress = false
+            if type(onComplete) == "function" then
+                pcall(onComplete, false)
+            end
+            return
+        end
         ProcessBatch(1)
     end)
 end

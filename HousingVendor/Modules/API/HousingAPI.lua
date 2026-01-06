@@ -5,11 +5,20 @@ HousingAPI.__index = HousingAPI
 
 -- Check if housing APIs are available
 function HousingAPI:IsAvailable()
+    -- TAINT FIX: Don't access C_HousingCatalog before safe delay period
+    -- Even checking for existence can trigger module load and taint CollectionsJournal
+    if not _G.HousingCatalogSafeToCall then
+        return false
+    end
     return C_HousingCatalog ~= nil
 end
 
 -- Check if C_Housing API is available
 function HousingAPI:IsHousingAvailable()
+    -- TAINT FIX: Don't access C_Housing before safe delay period
+    if not _G.HousingCatalogSafeToCall then
+        return false
+    end
     return C_Housing ~= nil
 end
 
@@ -149,6 +158,9 @@ function HousingAPI:GetCatalogData(itemID)
     local result = {}
     local id = tonumber(itemID)
     if not id or not self:IsAvailable() then return result end
+
+    -- TAINT FIX: Don't call Housing APIs before safe delay period
+    if not _G.HousingCatalogSafeToCall then return result end
 
     -- Step 1: GetCatalogEntryInfoByItem
     local ok, entryInfo = pcall(C_HousingCatalog.GetCatalogEntryInfoByItem, id, true)
@@ -329,9 +341,11 @@ end
 -- Get catalog entry info by item ID (simple wrapper)
 function HousingAPI:GetCatalogEntryInfoByItem(itemID)
     if not self:IsAvailable() then return nil end
+    -- TAINT FIX: Don't call Housing APIs before safe delay period
+    if not _G.HousingCatalogSafeToCall then return nil end
     local id = tonumber(itemID)
     if not id then return nil end
-    
+
     local ok, entryInfo = pcall(C_HousingCatalog.GetCatalogEntryInfoByItem, id, true)
     if ok and entryInfo then
         return entryInfo
@@ -342,7 +356,9 @@ end
 -- Get catalog entry info by record ID
 function HousingAPI:GetCatalogEntryInfoByRecordID(entryType, recordID)
     if not self:IsAvailable() then return nil end
-    
+    -- TAINT FIX: Don't call Housing APIs before safe delay period
+    if not _G.HousingCatalogSafeToCall then return nil end
+
     local ok, fullEntry = pcall(C_HousingCatalog.GetCatalogEntryInfoByRecordID, entryType, recordID, true)
     if ok and fullEntry then
         return fullEntry
@@ -353,7 +369,9 @@ end
 -- Get catalog category info
 function HousingAPI:GetCatalogCategoryInfo(categoryID)
     if not self:IsAvailable() then return nil end
-    
+    -- TAINT FIX: Don't call Housing APIs before safe delay period
+    if not _G.HousingCatalogSafeToCall then return nil end
+
     local ok, catInfo = pcall(C_HousingCatalog.GetCatalogCategoryInfo, categoryID)
     if ok and catInfo then
         return catInfo
@@ -383,9 +401,12 @@ local function BuildExpansionTagLookup()
     if HousingAPICache then
         tagGroups = HousingAPICache:GetFilterTagGroups()
     else
-        local ok, groups = pcall(C_HousingCatalog.GetAllFilterTagGroups)
-        if ok and groups then
-            tagGroups = groups
+        -- TAINT FIX: Don't call Housing APIs before safe delay period
+        if _G.HousingCatalogSafeToCall then
+            local ok, groups = pcall(C_HousingCatalog.GetAllFilterTagGroups)
+            if ok and groups then
+                tagGroups = groups
+            end
         end
     end
 
@@ -428,6 +449,8 @@ end
 -- Get expansion from filter tags (if available from API) - OPTIMIZED VERSION
 function HousingAPI:GetExpansionFromFilterTags(itemID)
     if not self:IsAvailable() then return nil end
+    -- TAINT FIX: Don't call Housing APIs before safe delay period
+    if not _G.HousingCatalogSafeToCall then return nil end
 
     -- Build/get expansion tag lookup table (cached for 1 hour)
     local lookup = BuildExpansionTagLookup()
@@ -467,7 +490,9 @@ end
 -- Get catalog subcategory info
 function HousingAPI:GetCatalogSubcategoryInfo(subcategoryID)
     if not self:IsAvailable() then return nil end
-    
+    -- TAINT FIX: Don't call Housing APIs before safe delay period
+    if not _G.HousingCatalogSafeToCall then return nil end
+
     local ok, subcatInfo = pcall(C_HousingCatalog.GetCatalogSubcategoryInfo, subcategoryID)
     if ok and subcatInfo then
         return subcatInfo
@@ -700,9 +725,13 @@ end
 -- Initialize the API module
 function HousingAPI:Initialize()
     if self:IsAvailable() then
-        -- Live API access available (silent)
-        -- Initialize catalog searcher for caching
-        self:CreateCatalogSearcher()
+        -- TAINT FIX: Delay Housing API calls by 3 seconds to avoid CollectionsJournal taint
+        -- The Housing Catalog APIs internally access CollectionsJournal, causing taint
+        -- if called before Blizzard's UI is fully initialized.
+        -- Uses global flag _G.HousingCatalogSafeToCall set by CollectionAPI
+        C_Timer.After(3, function()
+            self:CreateCatalogSearcher()
+        end)
     else
         -- Live API not available (silent)
     end

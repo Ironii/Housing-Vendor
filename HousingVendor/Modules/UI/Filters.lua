@@ -14,6 +14,27 @@ local table_insert = table.insert
 
 local filterFrame = nil
 
+-- Track any dropdown/list popups that create full-screen click-catchers so we can hide them
+-- when switching to other sub-UIs (Auction House, Achievements, etc.).
+local popupRegistry = {}
+Filters._popupRegistry = popupRegistry
+
+function Filters:HideAllPopups()
+    for i = 1, #popupRegistry do
+        local entry = popupRegistry[i]
+        if entry then
+            local listFrame = entry.listFrame
+            local clickCatcher = entry.clickCatcher
+            if clickCatcher and clickCatcher.Hide then
+                clickCatcher:Hide()
+            end
+            if listFrame and listFrame.Hide and listFrame.IsShown and listFrame:IsShown() then
+                listFrame:Hide()
+            end
+        end
+    end
+end
+
 -- Theme reference
 local Theme = nil
 local function GetTheme()
@@ -50,8 +71,14 @@ local currentFilters = {
     showOnlyAvailable = true,  -- Default to showing only live items
     selectedExpansions = {},
     selectedSources = {},
-    selectedFactions = {}
+    selectedFactions = {},
+    zoneMapID = nil, -- optional language-independent zone filter
+    _userSetZone = false, -- prevent auto-filter from overriding manual zone selection
 }
+
+-- Expose the live filters table for other modules (VendorHelper, tooltips, etc).
+-- IMPORTANT: this must be the same table that `ApplyFilters()` passes to the item list.
+Filters.currentFilters = currentFilters
 
 -- Initialize filters
 function Filters:Initialize(parentFrame)
@@ -170,6 +197,10 @@ function Filters:CreateFilterSection(parentFrame)
     -- Zone scrollable button selector (column 4)
     local zoneBtn = self:CreateScrollableSelector(filterFrame, "Zone", col4X, row1Y, function(value)
         currentFilters.zone = value
+        currentFilters.zoneMapID = nil
+        -- Treat a manual zone selection as user intent; don't auto-override on zone events.
+        currentFilters._userSetZone = value ~= "All Zones"
+        self:ShowAutoFilterIndicator(nil)
         self:ApplyFilters()
     end)
     
@@ -253,11 +284,22 @@ function Filters:CreateFilterSection(parentFrame)
         self:ApplyFilters()
     end)
 
-    -- Quality scrollable button selector (column 2) - API data
+    -- Quality scrollable button selector (column 2)
     local qualityBtn = self:CreateScrollableSelector(filterFrame, "Quality", col2X, row3Y, function(value)
         currentFilters.quality = value
         self:ApplyFilters()
     end)
+    -- Hard-data-only mode: allow quality only if the DataManager supports API quality enrichment.
+    if HousingDataManager and HousingDataManager.HARD_DATA_ONLY and not HousingDataManager.ALLOW_API_QUALITY then
+        currentFilters.quality = "All Qualities"
+        if qualityBtn and qualityBtn.button and qualityBtn.button.buttonText then
+            qualityBtn.button.buttonText:SetText("All Qualities")
+        end
+        if qualityBtn and qualityBtn.button and qualityBtn.button.Disable then
+            qualityBtn.button:Disable()
+            qualityBtn.button:SetAlpha(0.65)
+        end
+    end
 
     -- Requirement scrollable button selector (column 3) - API data
     local requirementBtn = self:CreateScrollableSelector(filterFrame, "Requirement", col3X, row3Y, function(value)
@@ -265,24 +307,126 @@ function Filters:CreateFilterSection(parentFrame)
         self:ApplyFilters()
     end)
 
-    -- Hide Visited Vendors checkbox (column 4, row 3)
-    local hideVisitedCheckbox = CreateFrame("CheckButton", "HousingHideVisitedCheckbox", filterFrame, "UICheckButtonTemplate")
-    hideVisitedCheckbox:SetSize(24, 24)
-    hideVisitedCheckbox:SetPoint("TOPLEFT", col4X, row3Y)
-    hideVisitedCheckbox:SetChecked(currentFilters.hideVisited)
-
-    local hideVisitedLabel = filterFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    hideVisitedLabel:SetPoint("LEFT", hideVisitedCheckbox, "RIGHT", 5, 0)
-    hideVisitedLabel:SetText("Hide Visited")
-    hideVisitedLabel:SetTextColor(textPrimary[1], textPrimary[2], textPrimary[3], 1)
-
-    hideVisitedCheckbox:SetScript("OnClick", function(self)
-        currentFilters.hideVisited = self:GetChecked()
-        Filters:ApplyFilters()
-    end)
-
+    -- Note: "Hide Visited Vendors" moved to Settings UI
     -- Note: "Only Show Live Items" removed from UI - now controlled by /hv showall command
     -- Default behavior: Only show live items (showOnlyAvailable = true)
+
+    -- Navigation buttons (positioned on parent frame, not filter frame, so they stay visible)
+    -- Position them at the same location as row 3 of filters would be
+    local navBtnWidth = 85
+    local navBtnSpacing = 5
+    local navBtnAbsoluteY = topOffset + row3Y  -- Calculate absolute Y position
+    local navBtnAbsoluteX = col4X + 2  -- Account for filter frame left offset
+
+    -- Helper function to create navigation button (on parent frame)
+    local function CreateNavButton(parent, label, xPos, yPos, onClick)
+        local btn = CreateFrame("Button", nil, parent, "BackdropTemplate")
+        btn:SetSize(navBtnWidth, 24)
+        btn:SetPoint("TOPLEFT", xPos, yPos)
+
+        btn:SetBackdrop({
+            bgFile = "Interface\\Buttons\\WHITE8x8",
+            edgeFile = "Interface\\Buttons\\WHITE8x8",
+            tile = false,
+            edgeSize = 1,
+            insets = { left = 0, right = 0, top = 0, bottom = 0 }
+        })
+
+        local bgTertiary = HousingTheme.Colors.bgTertiary
+        local borderPrimary = HousingTheme.Colors.borderPrimary
+        btn:SetBackdropColor(bgTertiary[1], bgTertiary[2], bgTertiary[3], bgTertiary[4])
+        btn:SetBackdropBorderColor(borderPrimary[1], borderPrimary[2], borderPrimary[3], borderPrimary[4])
+
+        local btnText = btn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        btnText:SetPoint("CENTER")
+        btnText:SetText(label)
+        btnText:SetTextColor(textPrimary[1], textPrimary[2], textPrimary[3], 1)
+        btn.label = btnText
+
+        local bgHover = HousingTheme.Colors.bgHover
+        local accentPrimary = HousingTheme.Colors.accentPrimary
+        local textHighlight = HousingTheme.Colors.textHighlight
+
+        btn:SetScript("OnEnter", function(self)
+            self:SetBackdropColor(bgHover[1], bgHover[2], bgHover[3], bgHover[4])
+            self:SetBackdropBorderColor(accentPrimary[1], accentPrimary[2], accentPrimary[3], 1)
+            self.label:SetTextColor(textHighlight[1], textHighlight[2], textHighlight[3], 1)
+
+            -- Show tooltip
+            if self.tooltipText then
+                GameTooltip:SetOwner(self, "ANCHOR_TOP")
+                GameTooltip:SetText(self.tooltipText, 1, 1, 1, 1, true)
+                GameTooltip:Show()
+            end
+        end)
+
+        btn:SetScript("OnLeave", function(self)
+            self:SetBackdropColor(bgTertiary[1], bgTertiary[2], bgTertiary[3], bgTertiary[4])
+            self:SetBackdropBorderColor(borderPrimary[1], borderPrimary[2], borderPrimary[3], borderPrimary[4])
+            self.label:SetTextColor(textPrimary[1], textPrimary[2], textPrimary[3], 1)
+
+            -- Hide tooltip
+            GameTooltip:Hide()
+        end)
+
+        btn:SetScript("OnClick", onClick)
+
+        return btn
+    end
+
+    -- Create navigation buttons in a row (on parent frame so they stay visible)
+    local achBtn = CreateNavButton(parentFrame, "Achievements", navBtnAbsoluteX, navBtnAbsoluteY, function()
+        if HousingAchievementsUI then
+            -- Toggle: if already showing, hide and return to main UI
+            if HousingAchievementsUI._achievementsContainer and HousingAchievementsUI._achievementsContainer:IsShown() then
+                HousingAchievementsUI:Hide()
+            else
+                HousingAchievementsUI:Show()
+            end
+        end
+    end)
+    achBtn.tooltipText = L["TOOLTIP_ACHIEVEMENTS"] or "View housing-related achievements\nand track your progress"
+
+    local repBtn = CreateNavButton(parentFrame, "Reputation", navBtnAbsoluteX + navBtnWidth + navBtnSpacing, navBtnAbsoluteY, function()
+        if HousingReputationUI then
+            -- Toggle: if already showing, hide and return to main UI
+            if HousingReputationUI._reputationContainer and HousingReputationUI._reputationContainer:IsShown() then
+                HousingReputationUI:Hide()
+            else
+                HousingReputationUI:Show()
+            end
+        end
+    end)
+    repBtn.tooltipText = L["TOOLTIP_REPUTATION"] or "Track reputation requirements\nacross all your characters"
+
+    local statsBtn = CreateNavButton(parentFrame, "Statistics", navBtnAbsoluteX + (navBtnWidth + navBtnSpacing) * 2, navBtnAbsoluteY, function()
+        if HousingStatisticsUI then
+            -- Toggle: if already showing, hide and return to main UI
+            if HousingStatisticsUI._statsContainer and HousingStatisticsUI._statsContainer:IsShown() then
+                HousingStatisticsUI:Hide()
+            else
+                HousingStatisticsUI:Show()
+            end
+        end
+    end)
+    statsBtn.tooltipText = L["TOOLTIP_STATISTICS"] or "View collection statistics\nand progress charts"
+
+    -- Zone Popup button moved to header (next to Settings button)
+
+    local ahBtn = CreateNavButton(parentFrame, L["AUCTION_HOUSE_TITLE"] or "Auction House", navBtnAbsoluteX + (navBtnWidth + navBtnSpacing) * 3, navBtnAbsoluteY, function()
+        if HousingAuctionHouseUI then
+            if HousingAuctionHouseUI._container and HousingAuctionHouseUI._container:IsShown() then
+                HousingAuctionHouseUI:Hide()
+            else
+                HousingAuctionHouseUI:Show()
+            end
+        end
+    end)
+    ahBtn.tooltipText = L["TOOLTIP_AUCTION_HOUSE"] or "View auction prices\nand scan for updates"
+
+    -- Expose nav buttons for sub-UI visibility toggles
+    filterFrame.navButtons = { achBtn, repBtn, statsBtn, zoneBtn, ahBtn }
+    _G["HousingNavButtons"] = filterFrame.navButtons
 
     -- Back button (Midnight theme styled, hidden by default)
     local backBtn = CreateFrame("Button", "HousingBackButton", filterFrame, "BackdropTemplate")
@@ -299,7 +443,7 @@ function Filters:CreateFilterSection(parentFrame)
     
     local backBtnText = backBtn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     backBtnText:SetPoint("CENTER")
-    backBtnText:SetText("Back")
+    backBtnText:SetText(L["BUTTON_BACK"] or "Back")
     local textPrimary = HousingTheme.Colors.textPrimary
     backBtnText:SetTextColor(textPrimary[1], textPrimary[2], textPrimary[3], 1)
     backBtn.label = backBtnText
@@ -342,7 +486,7 @@ function Filters:CreateFilterSection(parentFrame)
     
     local clearBtnText = clearBtn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     clearBtnText:SetPoint("CENTER")
-    clearBtnText:SetText("Clear Filters")
+    clearBtnText:SetText(L["FILTER_CLEAR"] or "Clear Filters")
     clearBtnText:SetTextColor(textPrimary[1], textPrimary[2], textPrimary[3], 1)
     clearBtn.label = clearBtnText
     
@@ -519,28 +663,34 @@ function Filters:CreateScrollableSelector(parent, label, xOffset, yOffset, onCha
             -- Collection has fixed options
             options = {"Collected", "Uncollected"}
         elseif label == "Quality" then
-            -- Quality has fixed options (sorted by rarity)
-            options = {"Poor", "Common", "Uncommon", "Rare", "Epic", "Legendary"}
+            -- Quality requires API enrichment; allow it only if enabled.
+            if HousingDataManager and HousingDataManager.HARD_DATA_ONLY and not HousingDataManager.ALLOW_API_QUALITY then
+                options = {}
+            else
+                options = {"Poor", "Common", "Uncommon", "Rare", "Epic", "Legendary"}
+            end
         elseif label == "Requirement" then
             -- Requirement has fixed options
             -- Note: Event, Race commented out - no housing items have these requirements
             options = {"None", "Achievement", "Quest", "Reputation", "Renown", "Profession", "Class"}
         elseif HousingDataManager then
             local filterOptions = HousingDataManager:GetFilterOptions()
-            if label == "Expansion" then
-                options = filterOptions.expansions or {}
-            elseif label == "Vendor" then
-                options = filterOptions.vendors or {}
-            elseif label == "Zone" then
-                options = filterOptions.zones or {}
-            elseif label == "Type" then
-                options = filterOptions.types or {}
-            elseif label == "Category" then
-                options = filterOptions.categories or {}
-            elseif label == "Faction" then
-                options = filterOptions.factions or {}
-            elseif label == "Source" then
-                options = filterOptions.sources or {}
+            if filterOptions then
+                if label == "Expansion" then
+                    options = filterOptions.expansions or {}
+                elseif label == "Vendor" then
+                    options = filterOptions.vendors or {}
+                elseif label == "Zone" then
+                    options = filterOptions.zones or {}
+                elseif label == "Type" then
+                    options = filterOptions.types or {}
+                elseif label == "Category" then
+                    options = filterOptions.categories or {}
+                elseif label == "Faction" then
+                    options = filterOptions.factions or {}
+                elseif label == "Source" then
+                    options = filterOptions.sources or {}
+                end
             end
         end
 
@@ -596,16 +746,28 @@ function Filters:CreateScrollableSelector(parent, label, xOffset, yOffset, onCha
 
             -- Click handler
             btn:SetScript("OnClick", function()
-                local filterKey = string.lower(label)
-                currentFilters[filterKey] = option
-                if button.buttonText then
-                    button.buttonText:SetText(option)
+                -- Hide first so the click-catcher doesn't get stuck if filtering throws.
+                if listFrame and listFrame.Hide then
+                    listFrame:Hide()
                 end
-                if onChange then
-                    onChange(option)
+
+                local ok, err = pcall(function()
+                    local filterKey = string.lower(label)
+                    currentFilters[filterKey] = option
+                    if button.buttonText then
+                        button.buttonText:SetText(option)
+                    end
+                    if onChange then
+                        onChange(option)
+                    end
+                    if searchBox then
+                        searchBox:SetText("")
+                    end
+                end)
+
+                if not ok then
+                    print("|cFFFF0000HousingVendor:|r Filter error: " .. tostring(err))
                 end
-                listFrame:Hide()
-                searchBox:SetText("")
             end)
 
             -- Highlight current selection
@@ -658,6 +820,8 @@ function Filters:CreateScrollableSelector(parent, label, xOffset, yOffset, onCha
         searchBox:ClearFocus()
         clickCatcher:Hide()
     end)
+
+    table_insert(popupRegistry, { listFrame = listFrame, clickCatcher = clickCatcher })
 
     -- Store references
     container.button = button
@@ -857,7 +1021,10 @@ function Filters:CreateMultiSelectSelector(parent, label, xOffset, yOffset, onCh
 
                 -- Trigger onChange callback
                 if onChange then
-                    onChange(selectedItems)
+                    local ok, err = pcall(onChange, selectedItems)
+                    if not ok then
+                        print("|cFFFF0000HousingVendor:|r Filter error: " .. tostring(err))
+                    end
                 end
             end)
 
@@ -937,6 +1104,8 @@ function Filters:CreateMultiSelectSelector(parent, label, xOffset, yOffset, onCh
         clickCatcher:Hide()
     end)
 
+    table_insert(popupRegistry, { listFrame = listFrame, clickCatcher = clickCatcher })
+
     -- Store references
     container.button = button
     container.listFrame = listFrame
@@ -950,10 +1119,15 @@ end
 -- Apply filters and update item list
 function Filters:ApplyFilters()
     if HousingItemList and HousingDataManager then
-        local allItems = HousingDataManager.GetAllItemIDs and HousingDataManager:GetAllItemIDs() or HousingDataManager:GetAllItems()
+        local ok, err = pcall(function()
+            local allItems = HousingDataManager.GetAllItemIDs and HousingDataManager:GetAllItemIDs() or HousingDataManager:GetAllItems()
+            HousingItemList:UpdateItems(allItems, currentFilters)
+        end)
 
-        HousingItemList:UpdateItems(allItems, currentFilters)
-        
+        if not ok then
+            print("|cFFFF0000HousingVendor:|r Filter error: " .. tostring(err))
+        end
+
         -- Keep preview panel visible when filters change (don't hide it)
         -- The preview panel will update if the selected item is still in the filtered list
     else
@@ -967,10 +1141,19 @@ function Filters:GetFilters()
 end
 
 -- Set zone filter programmatically (for auto-filter feature)
-function Filters:SetZoneFilter(zoneName)
+function Filters:SetZoneFilter(zoneName, mapID)
     if not zoneName then return end
 
+    -- When auto-filtering by zone, respect manual user zone selections.
+    -- Auto-filter calls pass `mapID`; if the user manually set a zone, don't override.
+    if mapID and currentFilters._userSetZone then
+        return
+    end
+
     currentFilters.zone = zoneName
+    -- Store mapID for language-independent zone filtering
+    currentFilters.zoneMapID = mapID
+    currentFilters._userSetZone = false
 
     -- Update zone button text
     local zoneBtn = _G["HousingZoneButton"]
@@ -1022,6 +1205,8 @@ function Filters:ClearAllFilters()
     currentFilters.expansion = "All Expansions"
     currentFilters.vendor = "All Vendors"
     currentFilters.zone = "All Zones"
+    currentFilters.zoneMapID = nil
+    currentFilters._userSetZone = false
     currentFilters.type = "All Types"
     currentFilters.category = "All Categories"
     currentFilters.faction = GetDefaultFaction()
@@ -1030,7 +1215,7 @@ function Filters:ClearAllFilters()
     currentFilters.quality = "All Qualities"
     currentFilters.requirement = "All Requirements"
     currentFilters.hideVisited = false
-    currentFilters.showOnlyAvailable = false
+    currentFilters.showOnlyAvailable = true
     currentFilters.selectedExpansions = {}
     currentFilters.selectedSources = {}
     currentFilters.selectedFactions = {}
@@ -1040,7 +1225,8 @@ function Filters:ClearAllFilters()
         searchBox:SetText("")
     end
 
-    local hideVisitedCheckbox = _G["HousingHideVisitedCheckbox"]
+    -- Update the checkbox in Settings UI if it exists
+    local hideVisitedCheckbox = _G["HousingConfigHideVisitedCheckbox"]
     if hideVisitedCheckbox then
         hideVisitedCheckbox:SetChecked(false)
     end

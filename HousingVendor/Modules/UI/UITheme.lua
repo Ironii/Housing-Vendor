@@ -628,7 +628,7 @@ function HousingTheme:CreateFilterChip(parent, text, onRemove)
     
     local closeText = closeBtn:CreateFontString(nil, "OVERLAY", self.Fonts.small)
     closeText:SetPoint("CENTER")
-    closeText:SetText("X")
+    closeText:SetText(L["BUTTON_CLOSE_X"] or "X")
     closeText:SetTextColor(unpack(self.Colors.textSecondary))
     
     closeBtn:SetScript("OnEnter", function()

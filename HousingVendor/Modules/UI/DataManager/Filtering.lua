@@ -31,6 +31,17 @@ local function NormalizeVendorName(vendorName) return Util.NormalizeVendorName a
 local function CoalesceNonEmptyString(a,b) return Util.CoalesceNonEmptyString and Util.CoalesceNonEmptyString(a,b) or (a~=nil and a~="" and a or b) end
 local function InferFactionFromText(text) return Util.InferFactionFromText and Util.InferFactionFromText(text) or INTERNED_STRINGS["Neutral"] end
 
+local function IsItemAvailableByID(itemID)
+    local idNum = tonumber(itemID)
+    if not idNum then return false end
+
+    if _G.HousingNotReleased and _G.HousingNotReleased[idNum] then
+        return false
+    end
+
+    return true
+end
+
 -- Use shared GetFilterHash from Util (moved to Shared.lua to eliminate duplication)
 local function GetFilterHash(filters)
     return Util.GetFilterHash and Util.GetFilterHash(filters) or ""
@@ -79,6 +90,7 @@ function DataManager:FilterItems(items, filters)
             
             -- Check core fields (convert to lowercase on-demand)
             if string.find(string.lower(item.name or ""), searchText, 1, true) or
+               string.find(string.lower(item._searchName or ""), searchText, 1, true) or
                string.find(string.lower(item.zoneName or ""), searchText, 1, true) or
                string.find(string.lower(item.vendorName or ""), searchText, 1, true) then
                 searchMatch = true
@@ -190,12 +202,27 @@ function DataManager:FilterItems(items, filters)
             else
                 local matchesZone = false
 
-                -- Check vendor pool indices (memory-optimized multi-zone support via vendor locations)
+                -- PRIORITY: Use mapID-based matching if available (language-independent)
+                if filters.zoneMapID and item.mapID and item.mapID ~= 0 then
+                    if item.mapID == filters.zoneMapID then
+                        matchesZone = true
+                    end
+                end
+
+                -- Fallback: Check vendor pool indices (memory-optimized multi-zone support via vendor locations)
                 if not matchesZone and item._vendorIndices and type(item._vendorIndices) == "table" then
                     local pool = _G.HousingVendorPool
                     if pool and type(pool) == "table" then
                         for _, idx in ipairs(item._vendorIndices) do
                             local v = idx and pool[idx] or nil
+                            -- Try mapID matching first
+                            if filters.zoneMapID and v and v.coords and v.coords.mapID then
+                                if v.coords.mapID == filters.zoneMapID then
+                                    matchesZone = true
+                                    break
+                                end
+                            end
+                            -- Fallback to zone name matching
                             local zoneName = v and v.location or nil
                             if zoneName and zoneName ~= "" and zoneName == filters.zone then
                                 matchesZone = true
@@ -205,7 +232,7 @@ function DataManager:FilterItems(items, filters)
                     end
                 end
 
-                -- Also check API and static single zone fields
+                -- Fallback: Check API and static single zone fields (zone name matching)
                 if not matchesZone then
                     local apiZone = CoalesceNonEmptyString(item._apiZone, nil)
                     local staticZone = CoalesceNonEmptyString(item.zoneName, nil)
@@ -362,12 +389,12 @@ function DataManager:FilterItems(items, filters)
         -- Collection filter (check quantity data first, then HousingCollectionAPI - same logic as item bar)
         if show and filters.collection and filters.collection ~= "All" then
             local isCollected = false
-            
+
             -- First check: Do we have quantity data showing ownership? (owned = collected)
             local numStored = item._apiNumStored or 0
             local numPlaced = item._apiNumPlaced or 0
             local totalOwned = numStored + numPlaced
-            
+
             if totalOwned > 0 then
                 isCollected = true
             else
@@ -377,10 +404,50 @@ function DataManager:FilterItems(items, filters)
                     isCollected = HousingCollectionAPI:IsItemCollected(itemID)
                 end
             end
-            
-            if filters.collection == "Uncollected" and isCollected then
-                show = false
-                debugCounts.collectionFiltered = debugCounts.collectionFiltered + 1
+
+            -- For quest/achievement items, also check if they're complete
+            -- If quest/achievement is complete, treat as "obtainable" (not outstanding)
+            local isQuestComplete = false
+            local isAchievementComplete = false
+            local sourceType = item._sourceType or item.sourceType or "Vendor"
+
+            if sourceType == "Quest" or sourceType == INTERNED_STRINGS["Quest"] then
+                local questID = item._questId or item.questRequired
+                if questID then
+                    local numericQuestID = tonumber(questID)
+                    -- If questID is text, try to extract numeric ID
+                    if not numericQuestID and type(questID) == "string" then
+                        numericQuestID = tonumber(string.match(questID, "%d+"))
+                    end
+                    if numericQuestID and C_QuestLog and C_QuestLog.IsQuestFlaggedCompleted then
+                        isQuestComplete = C_QuestLog.IsQuestFlaggedCompleted(numericQuestID)
+                    end
+                end
+            elseif sourceType == "Achievement" or sourceType == INTERNED_STRINGS["Achievement"] then
+                local achievementID = item._achievementId or item.achievementRequired
+                if achievementID then
+                    local numericAchievementID = tonumber(achievementID)
+                    -- If achievementID is text, try to extract numeric ID
+                    if not numericAchievementID and type(achievementID) == "string" then
+                        numericAchievementID = tonumber(string.match(achievementID, "%d+"))
+                    end
+                    if numericAchievementID and C_AchievementInfo and C_AchievementInfo.GetAchievementInfo then
+                        local achievementInfo = C_AchievementInfo.GetAchievementInfo(numericAchievementID)
+                        if achievementInfo then
+                            isAchievementComplete = achievementInfo.completed or false
+                        end
+                    end
+                end
+            end
+
+            -- When filtering for "Uncollected":
+            -- - Hide if item is collected
+            -- - Hide if quest/achievement is complete (since it's obtainable, not truly outstanding)
+            if filters.collection == "Uncollected" then
+                if isCollected or isQuestComplete or isAchievementComplete then
+                    show = false
+                    debugCounts.collectionFiltered = debugCounts.collectionFiltered + 1
+                end
             elseif filters.collection == "Collected" and not isCollected then
                 show = false
                 debugCounts.collectionFiltered = debugCounts.collectionFiltered + 1
@@ -475,17 +542,7 @@ function DataManager:FilterItems(items, filters)
         if show and filters.showOnlyAvailable then
             local itemID = item.itemID and tonumber(item.itemID) or nil
             if itemID then
-                -- Check if item can be retrieved from game client API
-                local isAvailable = false
-                if C_Item and C_Item.GetItemNameByID then
-                    local itemName = C_Item.GetItemNameByID(itemID)
-                    -- Item is available if API returns a valid name (not nil and not "Unknown Item")
-                    if itemName and itemName ~= "" and itemName ~= "Unknown Item" then
-                        isAvailable = true
-                    end
-                end
-
-                if not isAvailable then
+                if not IsItemAvailableByID(itemID) then
                     show = false
                     debugCounts.availabilityFiltered = (debugCounts.availabilityFiltered or 0) + 1
                 end
@@ -528,6 +585,17 @@ function DataManager:FilterItems(items, filters)
                     if itemInfo and itemInfo.iconFileID and itemInfo.iconFileID > 0 then
                         hasTooltipData = true
                     end
+                end
+
+                -- If we have static info, treat it as valid data (avoid hiding known items).
+                if not hasTooltipData and (
+                    (item.name and item.name ~= "" and item.name ~= "Unknown Item")
+                    or (item._searchName and item._searchName ~= "" and item._searchName ~= "Unknown Item")
+                    or (item.title and item.title ~= "")
+                    or (item.vendorName and item.vendorName ~= "" and item.vendorName ~= "None")
+                    or (item.zoneName and item.zoneName ~= "")
+                ) then
+                    hasTooltipData = true
                 end
                 
                 -- If we have API data loaded, assume item has valid data (even if icon not loaded yet)

@@ -332,30 +332,40 @@ function ModelViewer:Initialize(parentFrame, anchorFrame)
     modelScene:EnableMouseWheel(true)
     modelScene:RegisterForDrag("RightButton")  -- Enable right-button drag
     
-    -- Right-click drag to manually rotate
+    -- Right-click drag to manually rotate (only run OnUpdate while dragging to reduce idle CPU)
     modelScene:SetScript("OnMouseDown", function(self, button)
-        if button == "RightButton" then
-            isDragging = true
-            local scale = self:GetEffectiveScale()
-            lastMouseX = GetCursorPosition() / scale
+        if button ~= "RightButton" then
+            return
         end
+        isDragging = true
+        local scale = self:GetEffectiveScale()
+        lastMouseX = GetCursorPosition() / scale
+
+        self:SetScript("OnUpdate", function(sceneFrame)
+            if not isDragging then
+                sceneFrame:SetScript("OnUpdate", nil)
+                return
+            end
+            local s = sceneFrame:GetEffectiveScale()
+            local mouseX = GetCursorPosition() / s
+            local delta = (mouseX - lastMouseX) * 0.005  -- Smoother rotation speed
+            currentRotation = currentRotation + delta
+            sceneFrame:SetFacing(currentRotation)
+            lastMouseX = mouseX
+        end)
     end)
     
     modelScene:SetScript("OnMouseUp", function(self, button)
-        if button == "RightButton" then
-            isDragging = false
+        if button ~= "RightButton" then
+            return
         end
+        isDragging = false
+        self:SetScript("OnUpdate", nil)
     end)
-    
-    modelScene:SetScript("OnUpdate", function(self, elapsed)
-        if isDragging then
-            local scale = self:GetEffectiveScale()
-            local mouseX = GetCursorPosition() / scale
-            local delta = (mouseX - lastMouseX) * 0.005  -- Smoother rotation speed
-            currentRotation = currentRotation + delta
-            self:SetFacing(currentRotation)
-            lastMouseX = mouseX
-        end
+
+    modelScene:SetScript("OnHide", function(self)
+        isDragging = false
+        self:SetScript("OnUpdate", nil)
     end)
 
     -- Mouse wheel zoom
@@ -518,4 +528,3 @@ function ModelViewer:IsVisible()
 end
 
 return ModelViewer
-

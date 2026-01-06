@@ -12,6 +12,50 @@ StatisticsUI._parentFrame = StatisticsUI._parentFrame or nil
 StatisticsUI._currentFontSize = StatisticsUI._currentFontSize or 12
 StatisticsUI._fontStrings = StatisticsUI._fontStrings or {}  -- Store references to all font strings for font size updates
 
+local function SetNavButtonsVisible(visible)
+    local buttons = _G["HousingNavButtons"]
+    if type(buttons) ~= "table" then
+        return
+    end
+    for _, btn in ipairs(buttons) do
+        if btn and btn.SetShown then
+            btn:SetShown(visible)
+        end
+    end
+end
+
+local modelViewerWasVisible = false
+
+local function SetMainUIVisible(visible)
+    if _G["HousingFilterFrame"] then
+        _G["HousingFilterFrame"]:SetShown(visible)
+    end
+    if _G["HousingItemListScrollFrame"] then
+        _G["HousingItemListScrollFrame"]:SetShown(visible)
+    end
+    if _G["HousingItemListContainer"] then
+        _G["HousingItemListContainer"]:SetShown(visible)
+    end
+    if _G["HousingItemListHeader"] then
+        _G["HousingItemListHeader"]:SetShown(visible)
+    end
+    if _G["HousingPreviewFrame"] then
+        _G["HousingPreviewFrame"]:SetShown(visible)
+    end
+    local modelFrame = _G["HousingModelViewerFrame"]
+    if not visible then
+        modelViewerWasVisible = modelFrame and modelFrame:IsShown() or false
+        if modelFrame then
+            modelFrame:Hide()
+        elseif _G["HousingModelViewer"] and _G["HousingModelViewer"].Hide then
+            _G["HousingModelViewer"]:Hide()
+        end
+    elseif modelViewerWasVisible and modelFrame then
+        modelFrame:Show()
+    end
+    SetNavButtonsVisible(visible)
+end
+
 -- Sub-modules loaded via TOC:
 -- - Statistics/Data.lua (data computation)
 -- - Statistics/Charts.lua (chart rendering)
@@ -70,7 +114,7 @@ function StatisticsUI:CreateStatsContainer()
     
     local backBtnText = backBtn:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     backBtnText:SetPoint("CENTER")
-    backBtnText:SetText("Back")
+    backBtnText:SetText(L["BUTTON_BACK"] or "Back")
     backBtnText:SetTextColor(textPrimary[1], textPrimary[2], textPrimary[3], 1)
     backBtn.label = backBtnText
     
@@ -129,24 +173,19 @@ function StatisticsUI:Show()
         return
     end
 
-    -- Hide filters, item list, and preview panel
-    if _G["HousingFilterFrame"] then
-        _G["HousingFilterFrame"]:Hide()
+    -- Hide other UI panels
+    if HousingAchievementsUI and HousingAchievementsUI.Hide then
+        HousingAchievementsUI:Hide()
     end
-    if _G["HousingItemListScrollFrame"] then
-        _G["HousingItemListScrollFrame"]:Hide()
+    if HousingReputationUI and HousingReputationUI.Hide then
+        HousingReputationUI:Hide()
     end
-    if _G["HousingItemListHeader"] then
-        _G["HousingItemListHeader"]:Hide()
+    if HousingAuctionHouseUI and HousingAuctionHouseUI.Hide then
+        HousingAuctionHouseUI:Hide()
     end
-    -- Hide preview panel
-    if _G["HousingPreviewFrame"] then
-        _G["HousingPreviewFrame"]:Hide()
-    end
-    -- Also hide model viewer if it exists
-    if HousingModelViewer and HousingModelViewer.Hide then
-        HousingModelViewer:Hide()
-    end
+
+    -- Hide main UI components and nav buttons
+    SetMainUIVisible(false)
 
     -- Update and show stats
     self:UpdateStats()
@@ -160,17 +199,9 @@ function StatisticsUI:Hide()
     if self._statsContainer then
         self._statsContainer:Hide()
     end
-    
-    -- Show filters and item list again
-    if _G["HousingFilterFrame"] then
-        _G["HousingFilterFrame"]:Show()
-    end
-    if _G["HousingItemListScrollFrame"] then
-        _G["HousingItemListScrollFrame"]:Show()
-    end
-    if _G["HousingItemListHeader"] then
-        _G["HousingItemListHeader"]:Show()
-    end
+
+    -- Show main UI components and nav buttons again
+    SetMainUIVisible(true)
 end
 
 -- Toggle statistics UI

@@ -85,6 +85,11 @@ function PreviewPanelData.Util.GetCurrencyIconMarkup(currencyID)
     local id = tonumber(currencyID)
     if not id or id <= 0 then return nil end
 
+    local fallbackIconFileIDs = {
+        -- Legacy currencies may not return iconFileID unless discovered; provide known icons for common ones.
+        [1220] = 7382824, -- Order Resources
+    }
+
     local currencyInfo = nil
     if HousingAPI and HousingAPI.GetCurrencyInfo then
         currencyInfo = HousingAPI:GetCurrencyInfo(id)
@@ -94,9 +99,51 @@ function PreviewPanelData.Util.GetCurrencyIconMarkup(currencyID)
     end
 
     local iconFileID = currencyInfo and (currencyInfo.iconFileID or currencyInfo.icon)
+    if not iconFileID then
+        iconFileID = fallbackIconFileIDs[id]
+    end
     if not iconFileID then return nil end
 
     return "|T" .. tostring(iconFileID) .. ":14|t"
+end
+
+local ITEM_ICON_MARKUP_CACHE = {}
+local ITEM_ICON_MARKUP_CACHE_COUNT = 0
+local MAX_ITEM_ICON_MARKUP_CACHE = 2000
+function PreviewPanelData.Util.GetItemIconMarkup(itemID)
+    local id = tonumber(itemID)
+    if not id or id <= 0 then return nil end
+
+    local cached = ITEM_ICON_MARKUP_CACHE[id]
+    if cached ~= nil then
+        return cached
+    end
+
+    local icon = nil
+    if C_Item and C_Item.GetItemIconByID then
+        icon = C_Item.GetItemIconByID(id)
+    end
+    if (not icon or icon == "") and GetItemIcon then
+        icon = GetItemIcon(id)
+    end
+
+    if not icon or icon == "" then
+        ITEM_ICON_MARKUP_CACHE[id] = nil
+        return nil
+    end
+
+    local markup = "|T" .. tostring(icon) .. ":14|t"
+    if ITEM_ICON_MARKUP_CACHE[id] == nil then
+        ITEM_ICON_MARKUP_CACHE_COUNT = ITEM_ICON_MARKUP_CACHE_COUNT + 1
+        if ITEM_ICON_MARKUP_CACHE_COUNT > MAX_ITEM_ICON_MARKUP_CACHE then
+            for k in pairs(ITEM_ICON_MARKUP_CACHE) do
+                ITEM_ICON_MARKUP_CACHE[k] = nil
+            end
+            ITEM_ICON_MARKUP_CACHE_COUNT = 0
+        end
+    end
+    ITEM_ICON_MARKUP_CACHE[id] = markup
+    return markup
 end
 
 function PreviewPanelData.Util.NormalizeCostString(costStr)
@@ -199,11 +246,16 @@ end
 
 function PreviewPanelData:DisplayCollectionStatus(previewFrame, item, catalogData)
     local itemID = tonumber(item.itemID)
-    local isCollected = false
-    if itemID and HousingCollectionAPI then
+    local collectionText = nil
+    local numPlaced = item._apiNumPlaced or catalogData.numPlaced or 0
+    local numStored = item._apiNumStored or catalogData.numStored or 0
+    local totalOwned = numPlaced + numStored
+    local isCollected = totalOwned > 0
+
+    if not isCollected and itemID and HousingCollectionAPI then
         isCollected = HousingCollectionAPI:IsItemCollected(itemID)
     end
-    
+
     if isCollected then
         previewFrame.collectedCheck:Show()
         previewFrame.collectedValue:SetText("|cFF00FF00Yes|r")
@@ -211,11 +263,6 @@ function PreviewPanelData:DisplayCollectionStatus(previewFrame, item, catalogDat
         previewFrame.collectedCheck:Hide()
         previewFrame.collectedValue:SetText("|cFFFF0000No|r")
     end
-    
-    local collectionText = nil
-    local numPlaced = item._apiNumPlaced or catalogData.numPlaced or 0
-    local numStored = item._apiNumStored or catalogData.numStored or 0
-    local totalOwned = numPlaced + numStored
 
     if numPlaced > 0 then
         collectionText = string.format("Placed: %d", numPlaced)
@@ -294,12 +341,97 @@ function PreviewPanelData:DisplayVendorInfo(previewFrame, item, catalogData)
     local itemID = item and tonumber(item.itemID) or nil
     local vendor = nil
     local zone = nil
-    local cost = catalogData.cost
+    local cost = (item and item.cost and item.cost ~= "") and nil or (catalogData and catalogData.cost)
     local costBreakdown = {}
     local costBreakdownIcons = {}
     local coordsText = nil
     local apiCoords = nil
     local apiMapID = nil
+
+    local function ApplyStaticCostIcons(text, components)
+        if type(text) ~= "string" or text == "" then
+            return text
+        end
+
+        -- Ensure gold uses the coin icon (in case it wasn't normalized upstream).
+        text = text:gsub("([%d,]+)%s*[Gg]old(%*?)", "%1 |TInterface\\MoneyFrame\\UI-GoldIcon:0|t%2")
+
+        -- If we don't have structured components for a mixed cost (e.g. API only),
+        -- still attempt to replace known currency words with their icons.
+        do
+            local known = {
+                { id = 1220, name = "Order Resources" },
+                { id = 1560, name = "War Resources" },
+                { id = 1155, name = "Ancient Mana" },
+                { id = 2815, name = "Resonance Crystals" },
+                { id = 2003, name = "Dragon Isles Supplies" },
+            }
+            for _, k in ipairs(known) do
+                local icon = PreviewPanelData.Util.GetCurrencyIconMarkup(k.id)
+                if icon and icon ~= "" then
+                    local escapedName = k.name:gsub("([^%w])", "%%%1")
+                    text = text:gsub("([%d,]+)%s+" .. escapedName .. "(%*?)", "%1 " .. icon .. "%2")
+                end
+            end
+        end
+
+        -- Same idea for item-based costs (Mechagon parts, etc.).
+        do
+            local knownItems = {
+                { id = 166970, name = "Energy Cell" },
+                { id = 168832, name = "Galvanic Oscillator" },
+                { id = 168327, name = "Chain Ignitercoil" },
+                { id = 169610, name = "S.P.A.R.E. Crate" },
+                { id = 166846, name = "Spare Parts" },
+            }
+            for _, k in ipairs(knownItems) do
+                local icon = PreviewPanelData.Util.GetItemIconMarkup(k.id)
+                if icon and icon ~= "" then
+                    local escapedName = k.name:gsub("([^%w])", "%%%1")
+                    text = text:gsub("([%d,]+)%s+" .. escapedName .. "(%*?)", "%1 " .. icon .. "%2")
+                end
+            end
+        end
+
+        if type(components) ~= "table" then
+            return text
+        end
+
+        for _, component in ipairs(components) do
+            local itemID = component and component.itemID
+            local currencyTypeID = component and component.currencyTypeID
+            local amount = component and component.amount
+            if itemID and amount then
+                local icon = PreviewPanelData.Util.GetItemIconMarkup(itemID)
+                if icon and icon ~= "" then
+                    local name = component.name or ""
+                    name = tostring(name or "")
+                    if name ~= "" then
+                        local escapedName = name:gsub("([^%w])", "%%%1")
+                        local amountStr = tostring(amount)
+                        local amountWithComma = amountStr:reverse():gsub("(%d%d%d)", "%1,"):reverse():gsub("^,", "")
+                        text = text:gsub(amountWithComma .. "%s+" .. escapedName, amountWithComma .. " " .. icon)
+                        text = text:gsub(amountStr .. "%s+" .. escapedName, amountStr .. " " .. icon)
+                    end
+                end
+            elseif currencyTypeID and amount then
+                local icon = PreviewPanelData.Util.GetCurrencyIconMarkup(currencyTypeID)
+                if icon and icon ~= "" then
+                    local name = component.name or PreviewPanelData.Util.GetCurrencyName(currencyTypeID, nil) or ""
+                    name = tostring(name or "")
+                    if name ~= "" then
+                        local escapedName = name:gsub("([^%w])", "%%%1")
+                        local amountStr = tostring(amount)
+                        local amountWithComma = amountStr:reverse():gsub("(%d%d%d)", "%1,"):reverse():gsub("^,", "")
+                        text = text:gsub(amountWithComma .. "%s+" .. escapedName, amountWithComma .. " " .. icon)
+                        text = text:gsub(amountStr .. "%s+" .. escapedName, amountStr .. " " .. icon)
+                    end
+                end
+            end
+        end
+
+        return text
+    end
 
     -- Store actual coordinate values for waypoint button (not just formatted text)
     local waypointX = nil
@@ -425,10 +557,11 @@ function PreviewPanelData:DisplayVendorInfo(previewFrame, item, catalogData)
         local filterZone = Filters and Filters.currentFilters and Filters.currentFilters.zone or nil
 
         if _G.HousingVendorHelper then
-            vendor = vendor or _G.HousingVendorHelper:GetVendorName(item, filterVendor)
-            zone = zone or _G.HousingVendorHelper:GetZoneName(item, filterZone)
+            local filterMapID = Filters and Filters.currentFilters and Filters.currentFilters.zoneMapID or nil
+            vendor = vendor or _G.HousingVendorHelper:GetVendorName(item, filterVendor, filterZone, filterMapID)
+            zone = zone or _G.HousingVendorHelper:GetZoneName(item, filterZone, filterMapID)
 
-            local coords = _G.HousingVendorHelper:GetVendorCoords(item, filterVendor)
+            local coords = _G.HousingVendorHelper:GetVendorCoords(item, filterVendor, filterZone, filterMapID)
             if coords and coords.x and coords.y and coords.x > 0 and coords.y > 0 then
                 -- Store actual numeric coordinates for waypoint
                 waypointX = coords.x
@@ -627,13 +760,65 @@ function PreviewPanelData:DisplayVendorInfo(previewFrame, item, catalogData)
     end
     
     previewFrame.SetFieldValue(previewFrame.zoneValue, displayZone, previewFrame.zoneValue.label)
-    
+
+    -- Auction House price (cached via AuctionHouseAPI scans/imports)
+    -- Only show for profession items (craftable items that can be sold on AH)
+    if previewFrame.ahPriceValue then
+        local isProfessionItem = itemID and _G.HousingProfessionData and _G.HousingProfessionData[itemID]
+
+        if isProfessionItem then
+            local function FormatAge(seconds)
+                seconds = math.max(0, tonumber(seconds) or 0)
+                if seconds < 60 then
+                    return string.format("%ds", seconds)
+                end
+                local mins = math.floor(seconds / 60)
+                if mins < 60 then
+                    return string.format("%dm", mins)
+                end
+                local hours = math.floor(mins / 60)
+                mins = mins % 60
+                if hours < 24 then
+                    return string.format("%dh %dm", hours, mins)
+                end
+                local days = math.floor(hours / 24)
+                hours = hours % 24
+                return string.format("%dd %dh", days, hours)
+            end
+
+            local priceText = "|cFF909090Not cached|r"
+            local tooltip = "No cached AH price for this item.\nRun Scan All / Scan Visible, or use Import Browse while viewing Housing -> Decor in the Auction House."
+
+            local api = _G.HousingAuctionHouseAPI
+            if itemID and api and api.GetCachedPrice then
+                local price, cachedAt = api:GetCachedPrice(itemID)
+                price = tonumber(price)
+                cachedAt = tonumber(cachedAt)
+                if price and price > 0 then
+                    priceText = PreviewPanelData.Util.FormatMoneyFromCopper(price)
+                    if cachedAt and cachedAt > 0 and _G.date and _G.time then
+                        local age = _G.time() - cachedAt
+                        tooltip = string.format("Last updated: %s\nAge: %s", _G.date("%Y-%m-%d %H:%M:%S", cachedAt), FormatAge(age))
+                    else
+                        tooltip = "Cached AH price (timestamp unavailable)."
+                    end
+                end
+            end
+
+            previewFrame.SetFieldValue(previewFrame.ahPriceValue, priceText, previewFrame.ahPriceValue.label)
+            previewFrame.ahPriceValue.tooltipText = tooltip
+        else
+            -- Hide AH price for non-profession items
+            previewFrame.SetFieldValue(previewFrame.ahPriceValue, nil, previewFrame.ahPriceValue.label)
+        end
+    end
+
     local costDisplay = cost
     if #costBreakdown > 0 then
         costDisplay = (costBreakdownIcons[1] or costBreakdown[1])
         item._costBreakdown = costBreakdown -- tooltip-friendly strings
         item._costBreakdownIcons = costBreakdownIcons
-    elseif catalogData and (catalogData.costRaw or catalogData.cost) then
+    elseif (not item or not item.cost or item.cost == "") and catalogData and (catalogData.costRaw or catalogData.cost) then
         local costText = catalogData.costRaw or catalogData.cost
         if type(costText) == "string" then
             local numeric = tonumber(costText)
@@ -668,6 +853,14 @@ function PreviewPanelData:DisplayVendorInfo(previewFrame, item, catalogData)
             item._costBreakdown = costBreakdown -- tooltip-friendly strings
             item._costBreakdownIcons = costBreakdownIcons
         end
+    elseif item and item.cost and item.cost ~= "" then
+        costDisplay = ApplyStaticCostIcons(item.cost, item._staticCostComponents)
+        item._costBreakdown = { costDisplay }
+        item._costBreakdownIcons = nil
+    end
+
+    if item and item._staticCostComponents and costDisplay and costDisplay ~= "" then
+        costDisplay = ApplyStaticCostIcons(costDisplay, item._staticCostComponents)
     end
 
     if costDisplay and costDisplay ~= "" and costDisplay ~= "N/A" then
@@ -756,6 +949,92 @@ function PreviewPanelData:DisplayVendorInfo(previewFrame, item, catalogData)
                                         GameTooltip:AddLine(" ", 1, 1, 1)
                                         GameTooltip:AddLine("Best progress on: " .. bestCharKey, 0.7, 0.7, 0.7)
                                     end
+
+                                    -- Also show this character's current progress (Blizzard API), when available.
+                                    local thisCharText = nil
+                                    local factionID = tonumber(repInfo.factionID)
+                                    local reactionNames = {"Hated", "Hostile", "Unfriendly", "Neutral", "Friendly", "Honored", "Revered", "Exalted"}
+
+                                    if factionID and cfg.rep == "standard" then
+                                        if C_ReputationInfo and C_ReputationInfo.GetFactionDataByID then
+                                            local ok, fd = pcall(C_ReputationInfo.GetFactionDataByID, factionID)
+                                            if ok and fd then
+                                                local standingID = tonumber(fd.reaction or fd.standingID)
+                                                local standingText = reactionNames[standingID] or "Unknown"
+
+                                                local cur = nil
+                                                local max = nil
+                                                if fd.currentReactionThreshold and fd.nextReactionThreshold and fd.currentStanding then
+                                                    max = tonumber(fd.nextReactionThreshold) - tonumber(fd.currentReactionThreshold)
+                                                    cur = tonumber(fd.currentStanding) - tonumber(fd.currentReactionThreshold)
+                                                elseif fd.barMin and fd.barMax and fd.barValue then
+                                                    max = tonumber(fd.barMax) - tonumber(fd.barMin)
+                                                    cur = tonumber(fd.barValue) - tonumber(fd.barMin)
+                                                end
+
+                                                if max and max > 0 and cur ~= nil then
+                                                    thisCharText = string.format("%s (%d/%d)", standingText, cur, max)
+                                                else
+                                                    thisCharText = standingText
+                                                end
+                                            end
+                                        elseif _G.GetFactionInfoByID then
+                                            local ok, _, _, standingID, barMin, barMax, barValue = pcall(_G.GetFactionInfoByID, factionID)
+                                            if ok then
+                                                local standingText = reactionNames[tonumber(standingID)] or "Unknown"
+                                                if barMin and barMax and barValue then
+                                                    thisCharText = string.format("%s (%d/%d)", standingText, tonumber(barValue) - tonumber(barMin), tonumber(barMax) - tonumber(barMin))
+                                                else
+                                                    thisCharText = standingText
+                                                end
+                                            end
+                                        end
+                                    elseif factionID and cfg.rep == "renown" then
+                                        if C_MajorFactions and C_MajorFactions.GetMajorFactionData then
+                                            local ok, mf = pcall(C_MajorFactions.GetMajorFactionData, factionID)
+                                            if ok and mf then
+                                                local lvl = tonumber(mf.renownLevel) or 0
+                                                local cur = tonumber(mf.renownReputationEarned) or nil
+                                                local max = tonumber(mf.renownLevelThreshold) or nil
+                                                if max and max > 0 and cur then
+                                                    thisCharText = string.format("Renown %d (%d/%d)", lvl, cur, max)
+                                                else
+                                                    thisCharText = string.format("Renown %d", lvl)
+                                                end
+                                            end
+                                        end
+                                    elseif factionID and cfg.rep == "friendship" then
+                                        if C_GossipInfo and C_GossipInfo.GetFriendshipReputation then
+                                            local ok, fr = pcall(C_GossipInfo.GetFriendshipReputation, factionID)
+                                            if ok and fr then
+                                                local standingText = fr.reaction or fr.reactionText or fr.standingText
+                                                if type(standingText) ~= "string" or standingText == "" then
+                                                    standingText = "Unknown"
+                                                end
+                                                local cur = tonumber(fr.standing) or tonumber(fr.friendshipFactionStanding) or tonumber(fr.rep) or nil
+                                                local max = tonumber(fr.maxRep) or tonumber(fr.nextThreshold) or tonumber(fr.friendshipFactionMaxRep) or nil
+                                                if max and max > 0 and cur then
+                                                    thisCharText = string.format("%s (%d/%d)", standingText, cur, max)
+                                                else
+                                                    thisCharText = standingText
+                                                end
+                                            end
+                                        elseif _G.GetFriendshipReputation then
+                                            local ok, _, _, standingText, barMin, barMax, barValue = pcall(_G.GetFriendshipReputation, factionID)
+                                            if ok then
+                                                if barMin and barMax and barValue then
+                                                    thisCharText = string.format("%s (%d/%d)", standingText or "Unknown", tonumber(barValue) - tonumber(barMin), tonumber(barMax) - tonumber(barMin))
+                                                else
+                                                    thisCharText = standingText or "Unknown"
+                                                end
+                                            end
+                                        end
+                                    end
+
+                                    if thisCharText then
+                                        GameTooltip:AddLine(" ", 1, 1, 1)
+                                        GameTooltip:AddLine("This character: " .. thisCharText, 0.7, 0.7, 0.7)
+                                    end
                                 end
 
                                 GameTooltip:Show()
@@ -793,8 +1072,11 @@ function PreviewPanelData:DisplayVendorInfo(previewFrame, item, catalogData)
                     y = waypointY,
                     mapID = waypointMapID
                 },
+                x = waypointX,
+                y = waypointY,
                 mapID = waypointMapID,
-                itemID = item.itemID
+                itemID = item.itemID,
+                npcID = item.npcID
             }
         else
             previewFrame.mapBtn:Hide()
@@ -806,6 +1088,7 @@ function PreviewPanelData:DisplayVendorInfo(previewFrame, item, catalogData)
     previewFrame.UpdateHeaderVisibility(previewFrame.vendorHeader, {
         previewFrame.vendorValue,
         previewFrame.costValue,
+        previewFrame.ahPriceValue,
         previewFrame.factionValue,
         previewFrame.reputationValue,
         previewFrame.renownValue,
@@ -978,37 +1261,36 @@ function PreviewPanelData:DisplayReagents(previewFrame, item)
         for i = #reagentData.reagents + 1, #container.lines do
             container.lines[i]:Hide()
         end
-        
+
         container:SetHeight(math.abs(yOffset) + 14)
     end
 end
 
 function PreviewPanelData:DisplayRequirements(previewFrame, item, catalogData)
     local questText = item._apiQuest or catalogData.quest
-    local questID = item._questId or (catalogData and catalogData.questID)
-    local achievementText = item._apiAchievement or catalogData.achievement
-    local achievementID = item._achievementId or (catalogData and catalogData.achievementID)
+    local questID = item._questId or (catalogData and catalogData.questID) or item.questRequired or item.questID
+    local achievementText = item._apiAchievement or (catalogData and catalogData.achievement) or item._achievementName
+    local achievementID = item._achievementId or (catalogData and catalogData.achievementID) or item.achievementRequired
     local eventText = catalogData.event
     local classText = catalogData.class
     local raceText = catalogData.race
     
     if questText and questText ~= "" and questText ~= "N/A" then
-        local isCompleted = false
-        if questID and C_QuestLog and C_QuestLog.IsQuestFlaggedCompleted then
-            local ok, completed = pcall(C_QuestLog.IsQuestFlaggedCompleted, questID)
-            if ok then
-                isCompleted = completed
+        local questStatus = ""
+        local numericQuestID = tonumber(questID)
+        if not numericQuestID and type(questID) == "string" then
+            numericQuestID = tonumber(string.match(questID, "%d+"))
+        end
+        if numericQuestID and C_QuestLog and C_QuestLog.IsQuestFlaggedCompleted then
+            local ok, isComplete = pcall(C_QuestLog.IsQuestFlaggedCompleted, numericQuestID)
+            if ok and isComplete then
+                questStatus = " |cFF00FF00(Completed)|r"
+            elseif ok and not isComplete then
+                questStatus = " |cFFFF0000(Not Completed)|r"
             end
         end
-        
-        local displayText = questText
-        if isCompleted then
-            displayText = displayText .. " |cFF00FF00(Completed)|r"
-        else
-            displayText = displayText .. " |cFFFF0000(Not Completed)|r"
-        end
-        
-        previewFrame.questValue:SetText(displayText)
+
+        previewFrame.questValue:SetText(questText .. questStatus)
         previewFrame.questValue:Show()
         if previewFrame.questValue.label then previewFrame.questValue.label:Show() end
     else
@@ -1018,7 +1300,7 @@ function PreviewPanelData:DisplayRequirements(previewFrame, item, catalogData)
     -- Achievement display with progress tracking
     if achievementText and achievementText ~= "" and achievementText ~= "N/A" then
         local isCompleted = false
-        local achievementPoints = nil
+        local achievementDate = nil
         local criteriaProgress = nil
         local criteriaDetails = nil
 
@@ -1026,12 +1308,21 @@ function PreviewPanelData:DisplayRequirements(previewFrame, item, catalogData)
             local completion = HousingAPI and HousingAPI.GetAchievementCompletion and HousingAPI:GetAchievementCompletion(achievementID) or nil
             if completion then
                 isCompleted = completion.completed
-                achievementPoints = completion.points
+                achievementDate = completion.date or completion.completionDate or nil
             elseif C_AchievementInfo and C_AchievementInfo.GetAchievementInfo then
                 local ok, achInfo = pcall(C_AchievementInfo.GetAchievementInfo, achievementID)
                 if ok and achInfo then
                     isCompleted = achInfo.completed
-                    achievementPoints = achInfo.points
+                    if isCompleted then
+                        achievementDate = achInfo.dateCompleted or achievementDate
+                        if not achievementDate and achInfo.month and achInfo.day and achInfo.year then
+                            local year = tonumber(achInfo.year)
+                            if year and year > 0 and year < 100 then year = 2000 + year end
+                            if year and year >= 1900 then
+                                achievementDate = string.format("%02d/%02d/%04d", tonumber(achInfo.month) or 0, tonumber(achInfo.day) or 0, year)
+                            end
+                        end
+                    end
                 end
             end
 
@@ -1073,15 +1364,16 @@ function PreviewPanelData:DisplayRequirements(previewFrame, item, catalogData)
         local displayText = achievementText
         if isCompleted then
             displayText = displayText .. " |cFF00FF00(Completed)|r"
+            if achievementDate and achievementDate ~= "" then
+                displayText = displayText .. " - " .. tostring(achievementDate)
+            end
         elseif criteriaProgress then
             displayText = displayText .. string.format(" |cFFFFAA00(%d/%d)|r", criteriaProgress.completed, criteriaProgress.total)
         else
             displayText = displayText .. " |cFFFF0000(Not Completed)|r"
         end
 
-        if achievementPoints and achievementPoints > 0 then
-            displayText = displayText .. " - " .. achievementPoints .. "pts"
-        end
+        -- Points omitted (low value/noisy for this addon)
 
         previewFrame.achievementValue:SetText(displayText)
         previewFrame.achievementValue:Show()
@@ -1096,6 +1388,65 @@ function PreviewPanelData:DisplayRequirements(previewFrame, item, catalogData)
                     GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
                     GameTooltip:SetText("Achievement Progress", 1, 1, 1)
                     GameTooltip:AddLine(" ")
+
+                    local achievementID = tonumber(previewFrame._achievementId)
+                    if achievementID then
+                        local earnedBy = nil
+                        local dateText = nil
+                        local completed = nil
+
+                        local completion = HousingAPI and HousingAPI.GetAchievementCompletion and HousingAPI:GetAchievementCompletion(achievementID) or nil
+                        if completion then
+                            completed = completion.completed
+                            earnedBy = completion.earnedBy or completion.earnedByCharacter or earnedBy
+                            dateText = completion.date or completion.completionDate or dateText
+                        end
+
+                        if C_AchievementInfo and C_AchievementInfo.GetAchievementInfo then
+                            local ok, achInfo = pcall(C_AchievementInfo.GetAchievementInfo, achievementID)
+                            if ok and achInfo then
+                                completed = achInfo.completed
+                                earnedBy = achInfo.earnedBy or achInfo.earnedByCharacter or achInfo.earnedByName or earnedBy
+                                dateText = achInfo.dateCompleted or dateText
+                                if not dateText and completed and achInfo.month and achInfo.day and achInfo.year then
+                                    local year = tonumber(achInfo.year)
+                                    if year and year > 0 and year < 100 then year = 2000 + year end
+                                    if year and year >= 1900 then
+                                        dateText = string.format("%02d/%02d/%04d", tonumber(achInfo.month) or 0, tonumber(achInfo.day) or 0, year)
+                                    end
+                                end
+                            end
+                        elseif _G.GetAchievementInfo then
+                            local ok, _, _, _, c, month, day, year, _, _, _, _, _, _, e = pcall(_G.GetAchievementInfo, achievementID)
+                            if ok then
+                                completed = c
+                                earnedBy = e or earnedBy
+                                if completed and month and day and year then
+                                    local y = tonumber(year)
+                                    if y and y > 0 and y < 100 then y = 2000 + y end
+                                    if y and y >= 1900 then
+                                        dateText = string.format("%02d/%02d/%04d", tonumber(month) or 0, tonumber(day) or 0, y)
+                                    end
+                                end
+                            end
+                        end
+
+                        if completed ~= nil then
+                            if completed then
+                                GameTooltip:AddLine("Completed", 0, 1, 0)
+                            else
+                                GameTooltip:AddLine("Not Completed", 1, 0.25, 0.25)
+                            end
+                        end
+                        if dateText and dateText ~= "" then
+                            GameTooltip:AddLine("Date: " .. tostring(dateText), 0.7, 0.7, 0.7)
+                        end
+                        if earnedBy and type(earnedBy) == "string" and earnedBy ~= "" then
+                            GameTooltip:AddLine("Earned by: " .. earnedBy, 0.7, 0.7, 0.7)
+                        end
+
+                        GameTooltip:AddLine(" ")
+                    end
 
                     for i, criteria in ipairs(previewFrame._achievementCriteriaDetails) do
                         local color = criteria.completed and "|cFF00FF00" or "|cFFFF0000"
@@ -1158,11 +1509,7 @@ function PreviewPanelData:DisplayRequirements(previewFrame, item, catalogData)
     end
     
     if previewFrame.achievementTrackBtn then
-        local shouldShow = achievementID ~= nil and achievementID ~= false
-        previewFrame.achievementTrackBtn:SetShown(shouldShow)
-        if achievementID then
-            previewFrame._achievementId = achievementID
-        end
+        previewFrame.achievementTrackBtn:Hide()
     end
     
     previewFrame.SetFieldValue(previewFrame.eventValue, eventText, previewFrame.eventValue.label)

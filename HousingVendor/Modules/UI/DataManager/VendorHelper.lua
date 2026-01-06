@@ -33,11 +33,28 @@ local function GetVendorList(item)
     return nil
 end
 
+local function NormalizeZoneFilter(filterZone, filterMapID)
+    if filterZone == "All Zones" then
+        filterZone = nil
+    end
+    if filterMapID ~= nil then
+        local num = tonumber(filterMapID)
+        if not num or num == 0 then
+            filterMapID = nil
+        else
+            filterMapID = num
+        end
+    end
+    return filterZone, filterMapID
+end
+
 --- Selects the best vendor for an item based on player faction
 --- @param item table The item record with _vendorData field
 --- @param filterVendor string|nil Optional vendor filter (if user filtered by specific vendor)
+--- @param filterZone string|nil Optional zone filter (if user filtered by specific zone)
+--- @param filterMapID number|nil Optional zone mapID filter (preferred over zone name)
 --- @return table|nil selectedVendor {name, location, coords, faction, expansion}
-function VendorHelper:SelectVendorForItem(item, filterVendor)
+function VendorHelper:SelectVendorForItem(item, filterVendor, filterZone, filterMapID)
     local vendors = GetVendorList(item)
 
     -- If user has filtered by vendor, always show that vendor
@@ -51,6 +68,21 @@ function VendorHelper:SelectVendorForItem(item, filterVendor)
         end
         -- If filtered vendor not found in _vendorData, return basic info
         return {name = filterVendor}
+    end
+
+    filterZone, filterMapID = NormalizeZoneFilter(filterZone, filterMapID)
+    if vendors and (filterZone or filterMapID) then
+        local zoneMatches = {}
+        for _, vendorInfo in ipairs(vendors) do
+            local mapID = vendorInfo.coords and tonumber(vendorInfo.coords.mapID) or nil
+            local location = vendorInfo.location
+            if (filterMapID and mapID == filterMapID) or (filterZone and location == filterZone) then
+                table.insert(zoneMatches, vendorInfo)
+            end
+        end
+        if #zoneMatches > 0 then
+            vendors = zoneMatches
+        end
     end
 
     -- Use faction-aware vendor lookup
@@ -88,9 +120,11 @@ end
 --- Falls back through: filtered vendor -> faction vendor -> API vendor -> static vendor
 --- @param item table The item record
 --- @param filterVendor string|nil Optional vendor filter
+--- @param filterZone string|nil Optional zone filter
+--- @param filterMapID number|nil Optional zone mapID filter
 --- @return string|nil vendorName
-function VendorHelper:GetVendorName(item, filterVendor)
-    local selectedVendor = self:SelectVendorForItem(item, filterVendor)
+function VendorHelper:GetVendorName(item, filterVendor, filterZone, filterMapID)
+    local selectedVendor = self:SelectVendorForItem(item, filterVendor, filterZone, filterMapID)
     if selectedVendor and selectedVendor.name then
         return selectedVendor.name
     end
@@ -103,30 +137,33 @@ end
 --- Gets the best zone name for display
 --- @param item table The item record
 --- @param filterZone string|nil Optional zone filter
+--- @param filterMapID number|nil Optional zone mapID filter
 --- @return string|nil zoneName
-function VendorHelper:GetZoneName(item, filterZone)
+function VendorHelper:GetZoneName(item, filterZone, filterMapID)
     -- If user has filtered by zone, show that zone
     if filterZone and filterZone ~= "All Zones" then
         return filterZone
     end
 
     -- Try to get zone from selected vendor
-    local selectedVendor = self:SelectVendorForItem(item, nil)
+    local selectedVendor = self:SelectVendorForItem(item, nil, filterZone, filterMapID)
     if selectedVendor and selectedVendor.location then
         return selectedVendor.location
     end
 
-    -- Fallback to static zone data (authoritative) then API data
-    -- Our hardcoded data is more accurate than Blizzard's API for zone corrections
-    return item.zoneName or item._apiZone
+    -- Fallback: Prefer API data (localized) for zone matching, then static data
+    -- API data will match player's client language; static data is authoritative but English-only
+    return item._apiZone or item.zoneName
 end
 
 --- Gets coordinates and mapID from the best vendor
 --- @param item table The item record
 --- @param filterVendor string|nil Optional vendor filter
+--- @param filterZone string|nil Optional zone filter
+--- @param filterMapID number|nil Optional zone mapID filter
 --- @return table|nil coords {x, y, mapID}
-function VendorHelper:GetVendorCoords(item, filterVendor)
-    local selectedVendor = self:SelectVendorForItem(item, filterVendor)
+function VendorHelper:GetVendorCoords(item, filterVendor, filterZone, filterMapID)
+    local selectedVendor = self:SelectVendorForItem(item, filterVendor, filterZone, filterMapID)
     if selectedVendor and selectedVendor.coords then
         return selectedVendor.coords
     end

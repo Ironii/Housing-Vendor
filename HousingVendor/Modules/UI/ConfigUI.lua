@@ -43,7 +43,7 @@ function ConfigUI:CreateConfigFrame()
     local textSecondary = HousingTheme.Colors.textSecondary
     
     local frame = CreateFrame("Frame", "HousingVendorConfigFrame", UIParent, "BackdropTemplate")
-    frame:SetSize(500, 500)
+    frame:SetSize(500, 680)
     frame:SetPoint("CENTER")
     frame:SetFrameStrata("DIALOG")
     frame:Hide()
@@ -85,7 +85,7 @@ function ConfigUI:CreateConfigFrame()
     
     local title = frame:CreateFontString(nil, "ARTWORK", "GameFontNormalLarge")
     title:SetPoint("LEFT", headerBg, "LEFT", 20, 0)
-    title:SetText("Settings")
+    title:SetText(L["BUTTON_SETTINGS"] or "Settings")
     title:SetTextColor(textPrimary[1], textPrimary[2], textPrimary[3], 1)
     
     -- Close button (modern style)
@@ -103,7 +103,7 @@ function ConfigUI:CreateConfigFrame()
     
     local closeX = closeBtn:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     closeX:SetPoint("CENTER")
-    closeX:SetText("X")
+    closeX:SetText(L["BUTTON_CLOSE_X"] or "X")
     closeX:SetTextColor(textPrimary[1], textPrimary[2], textPrimary[3], 1)
     
     closeBtn:SetScript("OnEnter", function(self)
@@ -118,21 +118,40 @@ function ConfigUI:CreateConfigFrame()
         frame:Hide()
     end)
     
-    -- Content area
-    local contentY = -90
+    -- Scrollable content area (for growing settings list)
+    local scrollFrame = CreateFrame("ScrollFrame", "HousingVendorConfigScrollFrame", frame, "UIPanelScrollFrameTemplate")
+    scrollFrame:SetPoint("TOPLEFT", frame, "TOPLEFT", 0, -60)
+    scrollFrame:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -28, 12)
+    scrollFrame:EnableMouseWheel(true)
+    scrollFrame:SetScript("OnMouseWheel", function(self, delta)
+        local step = 30
+        local current = self:GetVerticalScroll()
+        local max = self:GetVerticalScrollRange()
+        local nextScroll = current - (delta * step)
+        if nextScroll < 0 then nextScroll = 0 end
+        if nextScroll > max then nextScroll = max end
+        self:SetVerticalScroll(nextScroll)
+    end)
+
+    local content = CreateFrame("Frame", nil, scrollFrame)
+    content:SetPoint("TOPLEFT")
+    content:SetSize(1, 1)
+    scrollFrame:SetScrollChild(content)
+
+    local contentY = -30
     
     -- UI Scale slider
-    local scaleLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    local scaleLabel = content:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     scaleLabel:SetPoint("TOPLEFT", 30, contentY)
-    scaleLabel:SetText("UI Scale")
+    scaleLabel:SetText(L["SETTINGS_UI_SCALE"] or "UI Scale")
     scaleLabel:SetTextColor(textPrimary[1], textPrimary[2], textPrimary[3], 1)
     
-    local scaleValue = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    local scaleValue = content:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     scaleValue:SetPoint("LEFT", scaleLabel, "RIGHT", 10, 0)
     scaleValue:SetTextColor(accentPrimary[1], accentPrimary[2], accentPrimary[3], 1)
     scaleValue:SetText(string.format("%.2f", currentSettings.uiScale))
     
-    local scaleSlider = CreateFrame("Slider", "HousingVendorScaleSlider", frame, "OptionsSliderTemplate")
+    local scaleSlider = CreateFrame("Slider", "HousingVendorScaleSlider", content, "OptionsSliderTemplate")
     scaleSlider:SetPoint("TOPLEFT", scaleLabel, "BOTTOMLEFT", 0, -15)
     scaleSlider:SetWidth(420)
     scaleSlider:SetMinMaxValues(0.5, 1.5)
@@ -163,12 +182,12 @@ function ConfigUI:CreateConfigFrame()
     contentY = contentY - 90
     
     -- Theme Selector
-    local themeLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    local themeLabel = content:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     themeLabel:SetPoint("TOPLEFT", 30, contentY)
-    themeLabel:SetText("UI Theme")
+    themeLabel:SetText(L["SETTINGS_UI_THEME"] or "UI Theme")
     themeLabel:SetTextColor(textPrimary[1], textPrimary[2], textPrimary[3], 1)
     
-    local currentThemeName = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    local currentThemeName = content:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     currentThemeName:SetPoint("LEFT", themeLabel, "RIGHT", 10, 0)
     currentThemeName:SetTextColor(accentPrimary[1], accentPrimary[2], accentPrimary[3], 1)
     currentThemeName:SetText(HousingTheme.ActiveThemeName or "Midnight")
@@ -179,7 +198,7 @@ function ConfigUI:CreateConfigFrame()
     local themeNames = {"Midnight", "Alliance", "Horde", "Sleek Black"}
     
     local function CreateThemeButton(themeName, index)
-        local btn = CreateFrame("Button", nil, frame, "BackdropTemplate")
+        local btn = CreateFrame("Button", nil, content, "BackdropTemplate")
         btn:SetSize(100, 32)
         btn:SetPoint("TOPLEFT", themeLabel, "BOTTOMLEFT", (index - 1) * 105, themeBtnY)
         btn:SetBackdrop({
@@ -275,17 +294,17 @@ function ConfigUI:CreateConfigFrame()
     contentY = contentY - 70
     
     -- Font Size slider
-    local fontLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    local fontLabel = content:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     fontLabel:SetPoint("TOPLEFT", 30, contentY)
-    fontLabel:SetText("Font Size")
+    fontLabel:SetText(L["SETTINGS_FONT_SIZE"] or "Font Size")
     fontLabel:SetTextColor(textPrimary[1], textPrimary[2], textPrimary[3], 1)
     
-    local fontValue = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    local fontValue = content:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     fontValue:SetPoint("LEFT", fontLabel, "RIGHT", 10, 0)
     fontValue:SetTextColor(accentPrimary[1], accentPrimary[2], accentPrimary[3], 1)
     fontValue:SetText(tostring(currentSettings.fontSize) .. "px")
     
-    local fontSlider = CreateFrame("Slider", "HousingVendorFontSlider", frame, "OptionsSliderTemplate")
+    local fontSlider = CreateFrame("Slider", "HousingVendorFontSlider", content, "OptionsSliderTemplate")
     fontSlider:SetPoint("TOPLEFT", fontLabel, "BOTTOMLEFT", 0, -15)
     fontSlider:SetWidth(420)
     fontSlider:SetMinMaxValues(10, 18)
@@ -316,12 +335,12 @@ function ConfigUI:CreateConfigFrame()
     contentY = contentY - 90
     
     -- Zone Popup Toggle Checkbox
-    local zonePopupLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    local zonePopupLabel = content:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     zonePopupLabel:SetPoint("TOPLEFT", 30, contentY)
-    zonePopupLabel:SetText("Zone Popups")
+    zonePopupLabel:SetText(L["SETTINGS_ZONE_POPUPS"] or "Zone Popups")
     zonePopupLabel:SetTextColor(textPrimary[1], textPrimary[2], textPrimary[3], 1)
     
-    local zonePopupCheckbox = CreateFrame("CheckButton", "HousingZonePopupCheckbox", frame, "UICheckButtonTemplate")
+    local zonePopupCheckbox = CreateFrame("CheckButton", "HousingZonePopupCheckbox", content, "UICheckButtonTemplate")
     zonePopupCheckbox:SetPoint("LEFT", zonePopupLabel, "RIGHT", 10, 0)
     zonePopupCheckbox:SetSize(24, 24)
     -- Default to true if not set, but respect explicit false values
@@ -331,11 +350,11 @@ function ConfigUI:CreateConfigFrame()
     end
     zonePopupCheckbox:SetChecked(popupEnabled)
     
-    local zonePopupDesc = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    local zonePopupDesc = content:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     zonePopupDesc:SetPoint("TOPLEFT", zonePopupLabel, "BOTTOMLEFT", 0, -8)
     zonePopupDesc:SetWidth(420)
     zonePopupDesc:SetJustifyH("LEFT")
-    zonePopupDesc:SetText("Show outstanding items popup when entering a new zone")
+    zonePopupDesc:SetText(L["SETTINGS_ZONE_POPUPS_DESC"] or "Show outstanding items popup when entering a new zone")
     zonePopupDesc:SetTextColor(textSecondary[1], textSecondary[2], textSecondary[3], 1)
     
     zonePopupCheckbox:SetScript("OnClick", function(self)
@@ -353,12 +372,12 @@ function ConfigUI:CreateConfigFrame()
     contentY = contentY - 60
     
     -- Multi-Select Filters Info Section
-    local multiSelectLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    local multiSelectLabel = content:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     multiSelectLabel:SetPoint("TOPLEFT", 30, contentY)
-    multiSelectLabel:SetText("Multi-Select Filters")
+    multiSelectLabel:SetText(L["SETTINGS_MULTI_SELECT_FILTERS"] or "Multi-Select Filters")
     multiSelectLabel:SetTextColor(textPrimary[1], textPrimary[2], textPrimary[3], 1)
     
-    local multiSelectDesc = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    local multiSelectDesc = content:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     multiSelectDesc:SetPoint("TOPLEFT", multiSelectLabel, "BOTTOMLEFT", 0, -8)
     multiSelectDesc:SetWidth(420)
     multiSelectDesc:SetJustifyH("LEFT")
@@ -366,14 +385,91 @@ function ConfigUI:CreateConfigFrame()
     multiSelectDesc:SetTextColor(textSecondary[1], textSecondary[2], textSecondary[3], 1)
     
     contentY = contentY - 60
-    
+
+    -- Hide Minimap Button Checkbox
+    local minimapButtonLabel = content:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    minimapButtonLabel:SetPoint("TOPLEFT", 30, contentY)
+    minimapButtonLabel:SetText(L["SETTINGS_HIDE_MINIMAP_BUTTON"] or "Hide Minimap Button")
+    minimapButtonLabel:SetTextColor(textPrimary[1], textPrimary[2], textPrimary[3], 1)
+
+    local minimapButtonCheckbox = CreateFrame("CheckButton", "HousingMinimapButtonCheckbox", content, "UICheckButtonTemplate")
+    minimapButtonCheckbox:SetPoint("LEFT", minimapButtonLabel, "RIGHT", 10, 0)
+    minimapButtonCheckbox:SetSize(24, 24)
+    local minimapHidden = false
+    if HousingDB and HousingDB.minimapButton and HousingDB.minimapButton.hide ~= nil then
+        minimapHidden = HousingDB.minimapButton.hide
+    end
+    minimapButtonCheckbox:SetChecked(minimapHidden)
+
+    local minimapButtonDesc = content:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    minimapButtonDesc:SetPoint("TOPLEFT", minimapButtonLabel, "BOTTOMLEFT", 0, -8)
+    minimapButtonDesc:SetWidth(420)
+    minimapButtonDesc:SetJustifyH("LEFT")
+    minimapButtonDesc:SetText("Hide the minimap button. Use /hv command to open the addon")
+    minimapButtonDesc:SetTextColor(textSecondary[1], textSecondary[2], textSecondary[3], 1)
+
+    minimapButtonCheckbox:SetScript("OnClick", function(self)
+        local isChecked = self:GetChecked()
+        if HousingDB and HousingDB.minimapButton then
+            HousingDB.minimapButton.hide = isChecked
+            if _G.HousingMinimap then
+                if isChecked then
+                    _G.HousingMinimap:HideButton()
+                    print("|cFFFF0000Housing|r|cFF0066FFVendor|r: Minimap button hidden. Use /hv to open")
+                else
+                    _G.HousingMinimap:ShowButton()
+                    print("|cFFFF0000Housing|r|cFF0066FFVendor|r: Minimap button shown")
+                end
+            end
+        end
+    end)
+
+    contentY = contentY - 60
+
+    -- Hide Visited Vendors Checkbox
+    local hideVisitedLabel = content:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    hideVisitedLabel:SetPoint("TOPLEFT", 30, contentY)
+    hideVisitedLabel:SetText(L["SETTINGS_HIDE_VISITED_VENDORS"] or "Hide Visited Vendors")
+    hideVisitedLabel:SetTextColor(textPrimary[1], textPrimary[2], textPrimary[3], 1)
+
+    local hideVisitedCheckbox = CreateFrame("CheckButton", "HousingConfigHideVisitedCheckbox", content, "UICheckButtonTemplate")
+    hideVisitedCheckbox:SetPoint("LEFT", hideVisitedLabel, "RIGHT", 10, 0)
+    hideVisitedCheckbox:SetSize(24, 24)
+    -- Get current value from filters
+    local hideVisitedEnabled = false
+    if HousingFilters and HousingFilters.GetFilters then
+        local filters = HousingFilters:GetFilters()
+        hideVisitedEnabled = filters.hideVisited or false
+    end
+    hideVisitedCheckbox:SetChecked(hideVisitedEnabled)
+
+    local hideVisitedDesc = content:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    hideVisitedDesc:SetPoint("TOPLEFT", hideVisitedLabel, "BOTTOMLEFT", 0, -8)
+    hideVisitedDesc:SetWidth(420)
+    hideVisitedDesc:SetJustifyH("LEFT")
+    hideVisitedDesc:SetText("Hide vendors you have already visited from the item list")
+    hideVisitedDesc:SetTextColor(textSecondary[1], textSecondary[2], textSecondary[3], 1)
+
+    hideVisitedCheckbox:SetScript("OnClick", function(self)
+        local isChecked = self:GetChecked()
+        if HousingFilters and HousingFilters.GetFilters then
+            local filters = HousingFilters:GetFilters()
+            filters.hideVisited = isChecked
+            if HousingFilters.ApplyFilters then
+                HousingFilters:ApplyFilters()
+            end
+        end
+    end)
+
+    contentY = contentY - 60
+
     -- Auto-Filter by Zone Toggle Checkbox
-    local autoFilterLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    local autoFilterLabel = content:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     autoFilterLabel:SetPoint("TOPLEFT", 30, contentY)
-    autoFilterLabel:SetText("Auto-Filter by Zone")
+    autoFilterLabel:SetText(L["SETTINGS_AUTO_FILTER_BY_ZONE"] or "Auto-Filter by Zone")
     autoFilterLabel:SetTextColor(textPrimary[1], textPrimary[2], textPrimary[3], 1)
     
-    local autoFilterCheckbox = CreateFrame("CheckButton", "HousingAutoFilterCheckbox", frame, "UICheckButtonTemplate")
+    local autoFilterCheckbox = CreateFrame("CheckButton", "HousingAutoFilterCheckbox", content, "UICheckButtonTemplate")
     autoFilterCheckbox:SetPoint("LEFT", autoFilterLabel, "RIGHT", 10, 0)
     autoFilterCheckbox:SetSize(24, 24)
     -- Default to false if not set, but respect explicit true values
@@ -383,7 +479,7 @@ function ConfigUI:CreateConfigFrame()
     end
     autoFilterCheckbox:SetChecked(autoFilterEnabled)
     
-    local autoFilterDesc = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    local autoFilterDesc = content:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     autoFilterDesc:SetPoint("TOPLEFT", autoFilterLabel, "BOTTOMLEFT", 0, -8)
     autoFilterDesc:SetWidth(420)
     autoFilterDesc:SetJustifyH("LEFT")
@@ -410,9 +506,108 @@ function ConfigUI:CreateConfigFrame()
         end
     end)
 
-  
-    
+    -- Vendor Marker Toggle
+    local vendorMarkerLabel = content:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+    vendorMarkerLabel:SetPoint("TOPLEFT", autoFilterDesc, "BOTTOMLEFT", 0, -30)
+    vendorMarkerLabel:SetText(L["SETTINGS_VENDOR_MARKER"] or "Vendor Marker")
+    vendorMarkerLabel:SetTextColor(accentPrimary[1], accentPrimary[2], accentPrimary[3], 1)
+
+    local vendorMarkerCheckbox = CreateFrame("CheckButton", "HousingVendorMarkerCheckbox", content, "ChatConfigCheckButtonTemplate")
+    vendorMarkerCheckbox:SetPoint("LEFT", vendorMarkerLabel, "RIGHT", 8, 0)
+    vendorMarkerCheckbox:SetSize(24, 24)
+
+    local vendorMarkerEnabled = false
+    if HousingDB and HousingDB.settings and HousingDB.settings.enableVendorMarker ~= nil then
+        vendorMarkerEnabled = HousingDB.settings.enableVendorMarker
+    end
+    vendorMarkerCheckbox:SetChecked(vendorMarkerEnabled)
+
+    local vendorMarkerDesc = content:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    vendorMarkerDesc:SetPoint("TOPLEFT", vendorMarkerLabel, "BOTTOMLEFT", 0, -8)
+    vendorMarkerDesc:SetWidth(420)
+    vendorMarkerDesc:SetJustifyH("LEFT")
+    vendorMarkerDesc:SetText("Highlight vendor NPCs with colored nameplate borders (use /hv mark)")
+    vendorMarkerDesc:SetTextColor(textSecondary[1], textSecondary[2], textSecondary[3], 1)
+
+    vendorMarkerCheckbox:SetScript("OnClick", function(self)
+        local isChecked = self:GetChecked()
+        if HousingDB and HousingDB.settings then
+            HousingDB.settings.enableVendorMarker = isChecked
+            if isChecked then
+                print("|cFFFF0000Housing|r|cFF0066FFVendor|r: Vendor marker enabled")
+                if HousingVendorMarker and HousingVendorMarker.Initialize then
+                    HousingVendorMarker:Initialize()
+                end
+            else
+                print("|cFFFF0000Housing|r|cFF0066FFVendor|r: Vendor marker disabled")
+            end
+        end
+    end)
+
+    local distanceUnitLabel = content:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    distanceUnitLabel:SetPoint("TOPLEFT", vendorMarkerDesc, "BOTTOMLEFT", 0, -10)
+    distanceUnitLabel:SetText(L["SETTINGS_VENDOR_MARKER_DISTANCE_UNIT"] or "Vendor marker distance unit")
+    distanceUnitLabel:SetTextColor(textPrimary[1], textPrimary[2], textPrimary[3], 1)
+
+    local distanceUnitCheckbox = CreateFrame("CheckButton", "HousingVendorMarkerUnitCheckbox", content, "UICheckButtonTemplate")
+    distanceUnitCheckbox:SetPoint("LEFT", distanceUnitLabel, "RIGHT", 10, 0)
+    distanceUnitCheckbox:SetSize(24, 24)
+
+    local useMeters = false
+    if HousingDB and HousingDB.settings and HousingDB.settings.vendorMarkerUseMeters ~= nil then
+        useMeters = HousingDB.settings.vendorMarkerUseMeters
+    end
+    distanceUnitCheckbox:SetChecked(useMeters)
+
+    local distanceUnitDesc = content:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    distanceUnitDesc:SetPoint("TOPLEFT", distanceUnitLabel, "BOTTOMLEFT", 0, -8)
+    distanceUnitDesc:SetWidth(420)
+    distanceUnitDesc:SetJustifyH("LEFT")
+    distanceUnitDesc:SetText("Use meters instead of yards in the marker popup")
+    distanceUnitDesc:SetTextColor(textSecondary[1], textSecondary[2], textSecondary[3], 1)
+
+    distanceUnitCheckbox:SetScript("OnClick", function(self)
+        local isChecked = self:GetChecked()
+        if HousingDB and HousingDB.settings then
+            HousingDB.settings.vendorMarkerUseMeters = isChecked
+        end
+        if HousingVendorMarker and HousingVendorMarker.UpdateDistanceDisplay then
+            HousingVendorMarker:UpdateDistanceDisplay()
+        end
+    end)
+
+    local function UpdateScrollLayout()
+        local availableWidth = scrollFrame:GetWidth() - 20
+        if availableWidth < 1 then availableWidth = 1 end
+        content:SetWidth(availableWidth)
+
+        local top = content:GetTop()
+        local bottom = distanceUnitDesc:GetBottom()
+        if top and bottom then
+            local neededHeight = (top - bottom) + 24
+            if neededHeight < 1 then neededHeight = 1 end
+            content:SetHeight(neededHeight)
+        end
+    end
+
+    frame:HookScript("OnShow", function()
+        if _G.C_Timer and _G.C_Timer.After then
+            _G.C_Timer.After(0, UpdateScrollLayout)
+        else
+            UpdateScrollLayout()
+        end
+    end)
+
+    frame:HookScript("OnSizeChanged", function()
+        if _G.C_Timer and _G.C_Timer.After then
+            _G.C_Timer.After(0, UpdateScrollLayout)
+        else
+            UpdateScrollLayout()
+        end
+    end)
+
     configFrame = frame
+
     return frame
 end
 
@@ -460,4 +655,3 @@ end
 _G["HousingConfigUI"] = ConfigUI
 
 return ConfigUI
-
