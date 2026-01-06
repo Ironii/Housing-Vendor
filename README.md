@@ -1,4 +1,3 @@
-Description
 HousingVendor  (v05.01.26.03)
 
 Browse, track, and plan your housing decoration collection.
