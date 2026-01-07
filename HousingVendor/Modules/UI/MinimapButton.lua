@@ -98,6 +98,15 @@ function HousingMinimapButton:CreateButton()
     -- Default: Load data addon and open main UI
     if HousingDataLoader then
       HousingDataLoader:EnsureDataLoaded(function()
+        local settings = HousingDB and HousingDB.settings or nil
+        local preferCompact = settings and settings.simpleMode == true
+        local compact = _G.HousingCompactUI or _G.HousingSimpleUI
+
+        if preferCompact and compact and compact.Toggle then
+          compact:Toggle()
+          return
+        end
+
         if HousingUINew and HousingUINew.Toggle then
           HousingUINew:Toggle()
         else

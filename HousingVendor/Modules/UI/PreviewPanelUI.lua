@@ -57,8 +57,86 @@ function PreviewPanelUI:CreateHeader(previewFrame)
     previewFrame.header = header
 
     self:CreateWishlistButton(previewFrame, header)
+    self:CreateMaterialsButton(previewFrame, header)
+    self:CreateReturnToCompactButton(previewFrame, header)
     self:CreateIconAndName(previewFrame, header)
     self:CreateCollectionStatus(previewFrame, header)
+end
+
+function PreviewPanelUI:CreateReturnToCompactButton(previewFrame)
+    local btn = CreateFrame("Button", nil, previewFrame, "BackdropTemplate")
+    btn:SetSize(36, 36)
+    btn:SetPoint("RIGHT", (previewFrame.materialsBtn or previewFrame.wishlistButton), "LEFT", -5, 0)
+    btn:SetFrameLevel(previewFrame:GetFrameLevel() + 5)
+
+    btn.icon = btn:CreateTexture(nil, "ARTWORK")
+    btn.icon:SetAllPoints(btn)
+    btn.icon:SetTexture("Interface\\AddOns\\HousingVendor\\Data\\Media\\BackButton_Icon_32.tga")
+    btn.icon:SetTexCoord(0, 1, 0, 1)
+
+    previewFrame.returnToCompactBtn = btn
+    btn:Hide()
+
+    local function ShouldShow()
+        local rt = _G.HousingUIReturnTarget
+        return (rt == "compact" or rt == "simple") and ((_G.HousingCompactUI and _G.HousingCompactUI.Show) or (_G.HousingSimpleUI and _G.HousingSimpleUI.Show))
+    end
+
+    function previewFrame:UpdateReturnToCompactVisibility()
+        if not self.returnToCompactBtn then
+            return
+        end
+        local show = ShouldShow()
+        if self.returnToCompactBtn.SetShown then
+            self.returnToCompactBtn:SetShown(show)
+        elseif show then
+            self.returnToCompactBtn:Show()
+        else
+            self.returnToCompactBtn:Hide()
+        end
+
+        -- Keep the waypoint icon positioned correctly when this button is shown/hidden.
+        if self.mapBtn and self.mapBtn.ClearAllPoints then
+            local anchor = (show and self.returnToCompactBtn) or self.materialsBtn or self.wishlistButton
+            if anchor then
+                self.mapBtn:ClearAllPoints()
+                self.mapBtn:SetPoint("RIGHT", anchor, "LEFT", -5, 0)
+            end
+        end
+    end
+
+    btn:SetScript("OnClick", function()
+        local ui = _G.HousingUINew
+        if ui and ui.ReturnToCaller and ui:ReturnToCaller() then
+            return
+        end
+
+        local compact = _G.HousingCompactUI or _G.HousingSimpleUI
+        if ui and ui.Hide then
+            ui:Hide()
+        end
+        if compact and compact.Show then
+            compact:Show()
+        end
+        _G.HousingUIReturnTarget = nil
+    end)
+
+    btn:SetScript("OnEnter", function(selfBtn)
+        if selfBtn.icon then
+            selfBtn.icon:SetVertexColor(1, 1, 0)
+        end
+        GameTooltip:SetOwner(selfBtn, "ANCHOR_LEFT")
+        GameTooltip:SetText("Back to Compact UI")
+        GameTooltip:AddLine("Returns to Compact Mode if you opened this panel from Compact UI.", 0.85, 0.85, 0.85, true)
+        GameTooltip:Show()
+    end)
+
+    btn:SetScript("OnLeave", function(selfBtn)
+        if selfBtn.icon then
+            selfBtn.icon:SetVertexColor(1, 1, 1)
+        end
+        GameTooltip:Hide()
+    end)
 end
 
 function PreviewPanelUI:CreateWishlistButton(previewFrame, header)
@@ -101,6 +179,11 @@ function PreviewPanelUI:CreateWishlistButton(previewFrame, header)
             if HousingItemList and HousingItemList.RefreshCollectionStatus then
                 HousingItemList:RefreshCollectionStatus()
             end
+
+            local mats = _G.HousingMaterialsTrackerUI
+            if mats and mats.RefreshSoon then
+                mats:RefreshSoon()
+            end
         end
     end)
     
@@ -122,6 +205,66 @@ function PreviewPanelUI:CreateWishlistButton(previewFrame, header)
     wishlistButton:SetScript("OnLeave", function(self)
         GameTooltip:Hide()
     end)
+end
+
+function PreviewPanelUI:CreateMaterialsButton(previewFrame)
+    local btn = CreateFrame("Button", nil, previewFrame)
+    btn:SetSize(36, 36)
+    btn:SetPoint("RIGHT", previewFrame.wishlistButton, "LEFT", -5, 0)
+    btn:SetFrameLevel(previewFrame:GetFrameLevel() + 5)
+
+    btn.icon = btn:CreateTexture(nil, "ARTWORK")
+    btn.icon:SetAllPoints(btn)
+    btn.icon:SetTexture("Interface\\Icons\\INV_Misc_Bag_10")
+    previewFrame.materialsBtn = btn
+
+    btn:SetScript("OnClick", function(_, mouseButton)
+        local ui = _G.HousingMaterialsTrackerUI
+        if not (ui and (ui.ShowForItem or ui.ShowWishlist)) then
+            print("|cFFFF4040HousingVendor:|r MaterialsTrackerUI module not available")
+            return
+        end
+
+        if mouseButton == "RightButton" then
+            if ui.ToggleWishlist then
+                ui:ToggleWishlist()
+            else
+                ui:ShowWishlist()
+            end
+            return
+        end
+
+        local item = previewFrame._currentItem
+        local itemID = item and tonumber(item.itemID)
+        if itemID and ui.ToggleForItem then
+            ui:ToggleForItem(itemID)
+        elseif itemID and ui.ShowForItem then
+            ui:ShowForItem(itemID)
+        else
+            if ui.ToggleWishlist then
+                ui:ToggleWishlist()
+            else
+                ui:ShowWishlist()
+            end
+        end
+    end)
+
+    btn:SetScript("OnEnter", function(self)
+        self.icon:SetVertexColor(1, 1, 0)
+        GameTooltip:SetOwner(self, "ANCHOR_LEFT")
+        GameTooltip:SetText("Materials Tracker", 1, 1, 1)
+        GameTooltip:AddLine("Left-click: current item reagents", 0.9, 0.9, 0.9)
+        GameTooltip:AddLine("Right-click: wishlist totals", 0.9, 0.9, 0.9)
+        GameTooltip:Show()
+    end)
+
+    btn:SetScript("OnLeave", function(self)
+        self.icon:SetVertexColor(1, 1, 1)
+        GameTooltip:Hide()
+    end)
+
+    -- Shown only when the current item has profession reagents (toggled in PreviewPanelData:DisplayReagents).
+    btn:Hide()
 end
 
 function PreviewPanelUI:CreateAchievementButton(previewFrame)
@@ -390,6 +533,20 @@ function PreviewPanelUI:CreateCollectionStatus(previewFrame, header)
     collectedVal:SetTextColor(textPrimary[1], textPrimary[2], textPrimary[3], 1)
     collectedVal.label = collectedLbl
     previewFrame.collectedValue = collectedVal
+
+    local recipeLbl = header:CreateFontString(nil, "ARTWORK", "GameFontNormal")
+    recipeLbl:SetPoint("LEFT", collectedVal, "RIGHT", 15, 0)
+    recipeLbl:SetText("Recipe:")
+    recipeLbl:SetTextColor(textSecondary[1], textSecondary[2], textSecondary[3], 1)
+
+    local recipeVal = header:CreateFontString(nil, "ARTWORK", "GameFontNormal")
+    recipeVal:SetPoint("LEFT", recipeLbl, "RIGHT", 6, 0)
+    recipeVal:SetJustifyH("LEFT")
+    recipeVal:SetTextColor(textPrimary[1], textPrimary[2], textPrimary[3], 1)
+    recipeVal.label = recipeLbl
+    recipeVal:Hide()
+    recipeLbl:Hide()
+    previewFrame.recipeValue = recipeVal
 end
 
 function PreviewPanelUI:CreateModelViewer(previewFrame)
@@ -832,6 +989,38 @@ function PreviewPanelUI:CreateDetailFields(previewFrame, details)
         return val
     end
 
+    -- Stacked field: label on first line, value directly underneath (prevents wide values from colliding with right-column UI).
+    local function LineStacked(label)
+        local lbl = details:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+        lbl:SetPoint("TOPLEFT", 10, y)
+        lbl:SetText(label)
+        lbl:SetTextColor(textSecondary[1], textSecondary[2], textSecondary[3], 1)
+
+        local val = details:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+        val:SetPoint("TOPLEFT", lbl, "BOTTOMLEFT", 0, -2)
+        val:SetWidth(240)
+        val:SetJustifyH("LEFT")
+        val:SetWordWrap(true)
+        val:SetTextColor(textPrimary[1], textPrimary[2], textPrimary[3], 1)
+
+        val.label = lbl
+        val._hvAnchorToSelf = true
+
+        val:SetScript("OnEnter", function(self)
+            if self.tooltipText then
+                GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+                GameTooltip:SetText(self.tooltipText, nil, nil, nil, nil, true)
+                GameTooltip:Show()
+            end
+        end)
+        val:SetScript("OnLeave", function(self)
+            GameTooltip:Hide()
+        end)
+
+        y = y - 32
+        return val
+    end
+
     local function LineWithTooltip(label)
         local lbl = details:CreateFontString(nil,"OVERLAY","GameFontNormal")
         lbl:SetPoint("TOPLEFT",10,y)
@@ -931,7 +1120,7 @@ function PreviewPanelUI:CreateDetailFields(previewFrame, details)
 
     previewFrame.vendorHeader = Header("Vendor")
     previewFrame.vendorValue, previewFrame.costValue = InlineVendorCost("Vendor:")
-    previewFrame.ahPriceValue = Line(L["BUY_ON_AH_CURRENT_PRICE"] or "Buy on AH (Current Price):")
+    previewFrame.ahPriceValue = LineStacked(L["BUY_ON_AH_CURRENT_PRICE"] or "Buy on AH:")
     previewFrame.factionValue = Line("Faction:")
     previewFrame.reputationValue = InlineReputation("Reputation:")
 
@@ -963,6 +1152,10 @@ function PreviewPanelUI:CreateDetailFields(previewFrame, details)
     previewFrame.expansionValue = Line("Expansion:")
     previewFrame.zoneValue = Line("Zone:")
     previewFrame.professionHeader = Header("Profession")
+    -- Keep the Profession divider on the left column so it doesn't cut through the reagents list.
+    if previewFrame.professionHeader and previewFrame.professionHeader.divider then
+        previewFrame.professionHeader.divider:SetWidth(240)
+    end
     previewFrame.professionValue = Line("Profession:")
     previewFrame.professionSkillValue = Line("Skill:")
     previewFrame.professionRecipeValue = Line("Recipe:")
@@ -1043,7 +1236,10 @@ function PreviewPanelUI:CreateDetailFields(previewFrame, details)
             return
         end
 
-        local vendorAnchor = (vendorTail.label and IsShown(vendorTail.label)) and vendorTail.label or vendorTail
+        local vendorAnchor = vendorTail
+        if vendorTail.label and IsShown(vendorTail.label) and not vendorTail._hvAnchorToSelf then
+            vendorAnchor = vendorTail.label
+        end
 
         if IsShown(self.professionHeader) then
             self.professionHeader:ClearAllPoints()
@@ -1077,16 +1273,19 @@ function PreviewPanelUI:CreateDetailFields(previewFrame, details)
             PlaceLine(self.professionSkillValue, 0)
             PlaceLine(self.professionRecipeValue, 0)
 
-            -- Keep reagents aligned to the profession header (right column).
-            if self.reagentsContainer and self.reagentsContainer.IsShown and self.reagentsContainer:IsShown() and self.professionHeader.GetTop and self.details.GetTop then
-                self.reagentsContainer:ClearAllPoints()
-                self.reagentsContainer:SetPoint(
-                    "TOPRIGHT",
-                    self.details,
-                    "TOPRIGHT",
-                    -10,
-                    (self.professionHeader:GetTop() - self.details:GetTop())
-                )
+            -- Keep reagents aligned to the Vendor header (right column) so long lists don't push below the panel.
+            if self.reagentsContainer and self.reagentsContainer.IsShown and self.reagentsContainer:IsShown() and self.details and self.details.GetTop then
+                local anchorHeader = (self.vendorHeader and self.vendorHeader.IsShown and self.vendorHeader:IsShown() and self.vendorHeader.GetTop) and self.vendorHeader or self.professionHeader
+                if anchorHeader and anchorHeader.GetTop then
+                    self.reagentsContainer:ClearAllPoints()
+                    self.reagentsContainer:SetPoint(
+                        "TOPRIGHT",
+                        self.details,
+                        "TOPRIGHT",
+                        -80,
+                        (anchorHeader:GetTop() - self.details:GetTop())
+                    )
+                end
             end
         end
 
@@ -1138,7 +1337,7 @@ end
 function PreviewPanelUI:CreateMapButton(previewFrame)
     local mapBtn = CreateFrame("Button", nil, previewFrame)
     mapBtn:SetSize(36, 36)
-    mapBtn:SetPoint("RIGHT", previewFrame.wishlistButton, "LEFT", -5, 0)
+    mapBtn:SetPoint("RIGHT", (previewFrame.returnToCompactBtn or previewFrame.materialsBtn or previewFrame.wishlistButton), "LEFT", -5, 0)
     mapBtn:SetFrameLevel(previewFrame:GetFrameLevel() + 5)
 
     mapBtn.icon = mapBtn:CreateTexture(nil,"ARTWORK")
@@ -1147,13 +1346,19 @@ function PreviewPanelUI:CreateMapButton(previewFrame)
     previewFrame.mapBtn = mapBtn
     mapBtn:Hide()
 
+    if previewFrame.UpdateReturnToCompactVisibility then
+        previewFrame:UpdateReturnToCompactVisibility()
+    end
+
     mapBtn:SetScript("OnClick", function()
-        if previewFrame._vendorInfo and HousingWaypointManager then
-            HousingWaypointManager:SetWaypoint(previewFrame._vendorInfo)
+        local info = previewFrame._waypointInfo or previewFrame._vendorInfo or previewFrame._trainerInfo
+        if info and HousingWaypointManager then
+            HousingWaypointManager:SetWaypoint(info)
 
             -- Show vendor marker UI if enabled
             if HousingDB and HousingDB.settings and HousingDB.settings.enableVendorMarker then
-                if HousingVendorMarker and previewFrame._vendorInfo.npcID then
+                -- Only show markers for actual vendors (not profession trainers).
+                if info == previewFrame._vendorInfo and HousingVendorMarker and previewFrame._vendorInfo and previewFrame._vendorInfo.npcID then
                     local vendorName = previewFrame._vendorInfo.vendorName or previewFrame._vendorInfo.name or "Vendor"
                     local npcID = previewFrame._vendorInfo.npcID
 
@@ -1174,7 +1379,11 @@ function PreviewPanelUI:CreateMapButton(previewFrame)
     mapBtn:SetScript("OnEnter", function(btn)
         btn.icon:SetVertexColor(1,1,0)
         GameTooltip:SetOwner(btn,"ANCHOR_LEFT")
-        GameTooltip:SetText("Set Waypoint")
+        if previewFrame._waypointContext == "trainer" then
+            GameTooltip:SetText("Set Waypoint (Trainer)")
+        else
+            GameTooltip:SetText("Set Waypoint")
+        end
         GameTooltip:Show()
     end)
 

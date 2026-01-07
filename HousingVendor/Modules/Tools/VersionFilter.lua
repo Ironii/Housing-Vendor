@@ -25,18 +25,25 @@ function HousingVersionFilter:IsBetaClient()
         self:GetCurrentGameVersion()
     end
 
+    -- Prefer Blizzard build flags when available.
+    -- NOTE: Expansion-major version (e.g., 12.0 prepatch) does NOT necessarily mean beta/PTR.
+    if _G.IsTestBuild and type(_G.IsTestBuild) == "function" then
+        local ok, isTest = pcall(_G.IsTestBuild)
+        if ok and isTest then return true end
+    end
+    if _G.IsBetaBuild and type(_G.IsBetaBuild) == "function" then
+        local ok, isBeta = pcall(_G.IsBetaBuild)
+        if ok and isBeta then return true end
+    end
+    if _G.C_GameEnvironmentManager and _G.C_GameEnvironmentManager.IsOnPublicTestRealm then
+        local ok, isPtr = pcall(_G.C_GameEnvironmentManager.IsOnPublicTestRealm)
+        if ok and isPtr then return true end
+    end
+
+    -- Fallback heuristic: only treat very-high major versions as beta (safety net).
     local version = self.versionInfo.version or ""
-
-    -- Check for beta/PTR indicators in version string
-    -- Examples: "11.1.0.57689" (live), "12.0.0.12345" (Midnight beta)
-    -- Beta versions typically have version numbers higher than current live
     local versionNumber = tonumber(version:match("^(%d+)%.")) or 0
-
-    -- As of The War Within (11.x), Midnight would be 12.x
-    -- Adjust this threshold as expansions release
-    local MIDNIGHT_VERSION = 12
-
-    return versionNumber >= MIDNIGHT_VERSION
+    return versionNumber >= 99
 end
 
 -- Get available expansions for current client

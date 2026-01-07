@@ -251,6 +251,10 @@ function PreviewPanelData:DisplayCollectionStatus(previewFrame, item, catalogDat
     local numStored = item._apiNumStored or catalogData.numStored or 0
     local totalOwned = numPlaced + numStored
     local isCollected = totalOwned > 0
+    local themeColors = _G.HousingTheme and _G.HousingTheme.Colors or {}
+    local statusSuccess = themeColors.statusSuccess or { 0.30, 0.85, 0.50, 1.0 }
+    local statusError = themeColors.statusError or { 0.95, 0.35, 0.40, 1.0 }
+    local textMuted = themeColors.textMuted or { 0.50, 0.48, 0.58, 1.0 }
 
     if not isCollected and itemID and HousingCollectionAPI then
         isCollected = HousingCollectionAPI:IsItemCollected(itemID)
@@ -262,6 +266,42 @@ function PreviewPanelData:DisplayCollectionStatus(previewFrame, item, catalogDat
     else
         previewFrame.collectedCheck:Hide()
         previewFrame.collectedValue:SetText("|cFFFF0000No|r")
+    end
+
+    -- Recipe known/unknown (profession items only). If we can't determine known/unknown yet,
+    -- show trainer guidance instead.
+    if previewFrame.recipeValue and previewFrame.recipeValue.label then
+        local hv = _G.HousingVendor
+        local pr = hv and hv.ProfessionReagents
+        local hasReagents = pr and pr.HasReagents and itemID and pr:HasReagents(itemID) or false
+
+        if hasReagents then
+            local known = pr and pr.IsRecipeKnown and pr:IsRecipeKnown(itemID) or nil
+            if known == nil then
+                local pt = hv and hv.ProfessionTrainers
+                local trainer = pt and pt.GetTrainerForItem and pt:GetTrainerForItem(itemID, item) or nil
+                local trainerName = trainer and trainer.name or nil
+                local trainerLocation = trainer and trainer.location or nil
+
+                previewFrame.recipeValue.label:SetText("Trainer:")
+                previewFrame.recipeValue:SetText(trainerName or trainerLocation or "")
+                previewFrame.recipeValue:SetTextColor(textMuted[1], textMuted[2], textMuted[3], 1)
+            elseif known == true then
+                previewFrame.recipeValue.label:SetText("Recipe:")
+                previewFrame.recipeValue:SetText("Known")
+                previewFrame.recipeValue:SetTextColor(statusSuccess[1], statusSuccess[2], statusSuccess[3], 1)
+            else
+                previewFrame.recipeValue.label:SetText("Recipe:")
+                previewFrame.recipeValue:SetText("Unknown")
+                previewFrame.recipeValue:SetTextColor(statusError[1], statusError[2], statusError[3], 1)
+            end
+            previewFrame.recipeValue:Show()
+            previewFrame.recipeValue.label:Show()
+        else
+            previewFrame.recipeValue:SetText("")
+            previewFrame.recipeValue:Hide()
+            previewFrame.recipeValue.label:Hide()
+        end
     end
 
     if numPlaced > 0 then
@@ -1058,31 +1098,35 @@ function PreviewPanelData:DisplayVendorInfo(previewFrame, item, catalogData)
     end
     previewFrame.SetFieldValue(previewFrame.renownValue, renownText, previewFrame.renownValue.label)
     
-    if coordsText and coordsText ~= "" then
-        -- Use the pre-extracted waypoint coordinates we gathered earlier
-        if waypointX and waypointY and waypointMapID then
-            previewFrame.mapBtn:Show()
-            previewFrame._vendorInfo = {
-                name = vendor,
-                vendorName = vendor,
-                zoneName = zone,
-                expansionName = item.expansionName,
-                coords = {
+    -- If the profession block already configured a trainer waypoint, don't hide/override it here.
+    local hasTrainerWaypoint = previewFrame._waypointContext == "trainer" and previewFrame._waypointInfo ~= nil
+    if not hasTrainerWaypoint then
+        if coordsText and coordsText ~= "" then
+            -- Use the pre-extracted waypoint coordinates we gathered earlier
+            if waypointX and waypointY and waypointMapID then
+                previewFrame.mapBtn:Show()
+                previewFrame._vendorInfo = {
+                    name = vendor,
+                    vendorName = vendor,
+                    zoneName = zone,
+                    expansionName = item.expansionName,
+                    coords = {
+                        x = waypointX,
+                        y = waypointY,
+                        mapID = waypointMapID
+                    },
                     x = waypointX,
                     y = waypointY,
-                    mapID = waypointMapID
-                },
-                x = waypointX,
-                y = waypointY,
-                mapID = waypointMapID,
-                itemID = item.itemID,
-                npcID = item.npcID
-            }
+                    mapID = waypointMapID,
+                    itemID = item.itemID,
+                    npcID = item.npcID
+                }
+            else
+                previewFrame.mapBtn:Hide()
+            end
         else
             previewFrame.mapBtn:Hide()
         end
-    else
-        previewFrame.mapBtn:Hide()
     end
     
     previewFrame.UpdateHeaderVisibility(previewFrame.vendorHeader, {
@@ -1102,6 +1146,7 @@ function PreviewPanelData:DisplayProfessionInfo(previewFrame, item, catalogData)
     local professionText = nil
     local professionSkillText = nil
     local professionRecipeText = nil
+    local professionRecipeLabel = "Recipe:"
     
     if item.profession then
         if item.professionSkillNeeded and item.professionSkillNeeded > 0 then
@@ -1137,17 +1182,65 @@ function PreviewPanelData:DisplayProfessionInfo(previewFrame, item, catalogData)
             professionSkillText = item.professionSkill
         end
 
-        if item.professionSpellID then
+        local itemID = tonumber(item.itemID)
+        local hv = _G.HousingVendor
+        local pr = hv and hv.ProfessionReagents
+        local hasReagents = pr and pr.HasReagents and itemID and pr:HasReagents(itemID) or false
+
+        local known = nil
+        if hasReagents then
+            known = pr and pr.IsRecipeKnown and pr:IsRecipeKnown(itemID) or nil
+        end
+
+        -- Prefer showing trainer guidance when we can't reliably detect recipe state.
+        if hasReagents and known == nil then
+            local pt = hv and hv.ProfessionTrainers
+            local trainer = pt and pt.GetTrainerForItem and pt:GetTrainerForItem(itemID, item) or nil
+            local trainerName = trainer and trainer.name or nil
+            local trainerLocation = trainer and trainer.location or nil
+
+            if trainerName or trainerLocation then
+                -- If we have trainer coordinates, point the waypoint button at the trainer (profession items only).
+                local coords = trainer and trainer.coords or nil
+                local x = coords and tonumber(coords.x) or nil
+                local y = coords and tonumber(coords.y) or nil
+                local mapID = coords and tonumber(coords.mapID) or nil
+                if previewFrame.mapBtn and x and y and mapID and x > 0 and y > 0 then
+                    previewFrame.mapBtn:Show()
+                    previewFrame._waypointContext = "trainer"
+                    previewFrame._waypointInfo = {
+                        name = trainerName or "Trainer",
+                        vendorName = trainerName or "Trainer",
+                        zoneName = trainerLocation,
+                        expansionName = item.professionSkill or item._apiExpansion or nil,
+                        coords = { x = x, y = y, mapID = mapID },
+                        x = x,
+                        y = y,
+                        mapID = mapID,
+                        itemID = item.itemID,
+                        npcID = nil,
+                    }
+                end
+            end
+        elseif hasReagents and known ~= nil then
+            professionRecipeLabel = "Recipe:"
+            professionRecipeText = known and "Recipe Known" or "Recipe Unknown"
+        end
+
+        -- Fallback: actual recipe/spell name if we didn't set trainer/known text above.
+        if not professionRecipeText then
+            if item.professionSpellID then
             local spellInfo = C_Spell and C_Spell.GetSpellInfo and C_Spell.GetSpellInfo(item.professionSpellID)
             if spellInfo and spellInfo.name then
                 professionRecipeText = spellInfo.name
             end
-        elseif item.professionRecipeID then
+            elseif item.professionRecipeID then
             if C_TradeSkillUI and C_TradeSkillUI.GetRecipeInfo then
                 local recipeInfo = C_TradeSkillUI.GetRecipeInfo(item.professionRecipeID)
                 if recipeInfo and recipeInfo.name then
                     professionRecipeText = recipeInfo.name
                 end
+            end
             end
         end
 
@@ -1166,6 +1259,17 @@ function PreviewPanelData:DisplayProfessionInfo(previewFrame, item, catalogData)
     previewFrame.SetFieldValue(previewFrame.professionValue, professionName, previewFrame.professionValue.label)
     previewFrame.SetFieldValue(previewFrame.professionSkillValue, professionSkillText, previewFrame.professionSkillValue.label)
     previewFrame.SetFieldValue(previewFrame.professionRecipeValue, professionRecipeText, previewFrame.professionRecipeValue.label)
+    if previewFrame.professionRecipeValue and previewFrame.professionRecipeValue.label and previewFrame.professionRecipeValue.label.SetText then
+        previewFrame.professionRecipeValue.label:SetText(professionRecipeLabel)
+        -- Keep the value column aligned with the "Profession:" line, even when the label is shorter ("Trainer:").
+        local baseLabel = previewFrame.professionValue and previewFrame.professionValue.label or nil
+        if baseLabel and baseLabel.GetStringWidth and previewFrame.professionRecipeValue.label.SetWidth then
+            local w = tonumber(baseLabel:GetStringWidth()) or nil
+            if w and w > 0 then
+                previewFrame.professionRecipeValue.label:SetWidth(w + 2)
+            end
+        end
+    end
 
     self:DisplayReagents(previewFrame, item)
     
@@ -1183,86 +1287,179 @@ function PreviewPanelData:DisplayReagents(previewFrame, item)
     
     local textPrimary = HousingTheme.Colors.textPrimary
     local accentPrimary = HousingTheme.Colors.accentPrimary
-    
+    local textSecondary = HousingTheme.Colors.textSecondary
+    local accentGold = HousingTheme.Colors.accentGold
+    local api = _G.HousingAuctionHouseAPI
+    local formatMoney = PreviewPanelData and PreviewPanelData.Util and PreviewPanelData.Util.FormatMoneyFromCopper
+
     if previewFrame.reagentsContainer then
         previewFrame.reagentsContainer:Hide()
         if previewFrame.reagentsContainer.header then
             previewFrame.reagentsContainer.header:Hide()
         end
+        if previewFrame.reagentsContainer.priceHeader then
+            previewFrame.reagentsContainer.priceHeader:Hide()
+        end
         for _, line in pairs(previewFrame.reagentsContainer.lines or {}) do
-            line:Hide()
+            if line and line.Hide then
+                line:Hide()
+            end
+        end
+        for _, line in pairs(previewFrame.reagentsContainer.priceLines or {}) do
+            if line and line.Hide then
+                line:Hide()
+            end
         end
     end
     
-    if reagentData and reagentData.reagents and #reagentData.reagents > 0 then
+    local hasReagents = reagentData and reagentData.reagents and #reagentData.reagents > 0
+    if previewFrame.materialsBtn then
+        if hasReagents then
+            previewFrame.materialsBtn:Show()
+        else
+            previewFrame.materialsBtn:Hide()
+        end
+    end
+
+    if hasReagents then
         if not previewFrame.reagentsContainer then
             local container = CreateFrame("Frame", nil, previewFrame.details)
-            container:SetWidth(210)
+            container:SetWidth(380)
             container:SetHeight(1)
             container.lines = {}
+            container.priceLines = {}
             previewFrame.reagentsContainer = container
         end
         
         local container = previewFrame.reagentsContainer
         container:ClearAllPoints()
-        container:SetPoint("TOPRIGHT", previewFrame.details, "TOPRIGHT", -10, (previewFrame.professionHeader:GetTop() - previewFrame.details:GetTop()))
+
+        -- Prefer aligning the reagents block to the Vendor header so long reagent lists start higher.
+        local anchorHeader = (previewFrame.vendorHeader and previewFrame.vendorHeader.IsShown and previewFrame.vendorHeader:IsShown() and previewFrame.vendorHeader.GetTop)
+            and previewFrame.vendorHeader
+            or previewFrame.professionHeader
+        local yAnchor = (anchorHeader and anchorHeader.GetTop and previewFrame.details and previewFrame.details.GetTop)
+            and (anchorHeader:GetTop() - previewFrame.details:GetTop())
+            or 0
+
+        -- Nudge left so the AH price column has breathing room.
+        container:SetPoint("TOPRIGHT", previewFrame.details, "TOPRIGHT", -80, yAnchor)
         container:Show()
         
         if not container.header then
             local header = previewFrame.details:CreateFontString(nil, "OVERLAY", "GameFontNormal")
             header:SetPoint("TOPRIGHT", container, "TOPRIGHT", 0, 0)
-            header:SetWidth(200)
+            header:SetWidth(240)
             header:SetJustifyH("LEFT")
             header:SetText("Reagents:")
             header:SetTextColor(accentPrimary[1], accentPrimary[2], accentPrimary[3], 1)
             container.header = header
         end
         container.header:Show()
+
+        if not container.priceHeader then
+            local header = previewFrame.details:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+            header:SetPoint("TOPRIGHT", container, "TOPRIGHT", -18, 0)
+            header:SetWidth(140)
+            header:SetJustifyH("RIGHT")
+            header:SetText("AH Price:(Total Price)")
+            header:SetTextColor(accentPrimary[1], accentPrimary[2], accentPrimary[3], 1)
+            container.priceHeader = header
+        end
+        container.priceHeader:Show()
         
         local yOffset = -18
+        local lineStep = 22
+
         for i, reagent in ipairs(reagentData.reagents) do
+            
+            if C_Item and C_Item.RequestLoadItemDataByID and reagent and reagent.id then
+                pcall(C_Item.RequestLoadItemDataByID, reagent.id)
+            end
+
             if not container.lines[i] then
                 local line = previewFrame.details:CreateFontString(nil, "OVERLAY", "GameFontNormal")
                 line:SetJustifyH("LEFT")
                 line:SetTextColor(textPrimary[1], textPrimary[2], textPrimary[3], 1)
                 container.lines[i] = line
             end
+            if not container.priceLines[i] then
+                -- Use a larger font so embedded coin textures are readable.
+                local line = previewFrame.details:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+                line:SetJustifyH("RIGHT")
+                line:SetTextColor(textSecondary[1], textSecondary[2], textSecondary[3], 1)
+                container.priceLines[i] = line
+            end
             
             local line = container.lines[i]
+            local priceLine = container.priceLines[i]
             line:ClearAllPoints()
-            line:SetPoint("TOPRIGHT", container.header, "BOTTOMRIGHT", 0, yOffset)
-            line:SetWidth(200)
+            line:SetPoint("TOPLEFT", container.header, "BOTTOMLEFT", 0, yOffset)
+            line:SetWidth(240)
+            priceLine:ClearAllPoints()
+            priceLine:SetPoint("TOPRIGHT", container.priceHeader, "BOTTOMRIGHT", 0, yOffset)
+            priceLine:SetWidth(140)
             
             local reagentName = nil
             if C_Item and C_Item.GetItemNameByID then
                 reagentName = C_Item.GetItemNameByID(reagent.id)
             end
-            
+
             if not reagentName and C_Item and C_Item.GetItemInfo then
                 reagentName = C_Item.GetItemInfo(reagent.id)
             end
-            
+
             if not reagentName then
                 reagentName = "Loading..."
                 C_Item.RequestLoadItemDataByID(reagent.id)
                 C_Timer.After(0.5, function()
-                    local name = C_Item.GetItemNameByID(reagent.id)
-                    if name and line then
-                        line:SetText(reagent.amount .. "x " .. name)
+                    local rid = reagent and reagent.id
+                    local amt = reagent and reagent.amount
+                    local name = rid and C_Item.GetItemNameByID(rid)
+                    if name and line and amt then
+                        line:SetText(amt .. "x " .. name)
                     end
                 end)
             end
-            
+
             line:SetText(reagent.amount .. "x " .. reagentName)
             line:Show()
-            yOffset = yOffset - 14
+
+            local unitPrice = nil
+            if api and api.GetOrFetchAddonPrice then
+                local p = select(1, api:GetOrFetchAddonPrice(reagent.id))
+                p = tonumber(p)
+                if p and p > 0 then
+                    unitPrice = p
+                end
+            elseif api and api.GetCachedPrice then
+                local p = api:GetCachedPrice(reagent.id)
+                p = tonumber(p)
+                if p and p > 0 then
+                    unitPrice = p
+                end
+            end
+
+            if unitPrice and formatMoney then
+                local total = unitPrice * (tonumber(reagent.amount) or 0)
+                priceLine:SetTextColor(accentGold[1], accentGold[2], accentGold[3], 1)
+                priceLine:SetText(formatMoney(unitPrice) .. " (" .. formatMoney(total) .. ")")
+            else
+                priceLine:SetTextColor(textSecondary[1], textSecondary[2], textSecondary[3], 1)
+                priceLine:SetText("|cFF909090No price|r")
+            end
+            priceLine:Show()
+            yOffset = yOffset - lineStep
         end
         
         for i = #reagentData.reagents + 1, #container.lines do
             container.lines[i]:Hide()
         end
+        for i = #reagentData.reagents + 1, #(container.priceLines or {}) do
+            container.priceLines[i]:Hide()
+        end
 
-        container:SetHeight(math.abs(yOffset) + 14)
+        container:SetHeight(math.abs(yOffset) + lineStep)
     end
 end
 

@@ -1,4 +1,4 @@
-﻿-- Statistics UI Module
+-- Statistics UI Module
 -- Detailed stats and graphs about the housing items database
 
 local ADDON_NAME, ns = ...
@@ -122,15 +122,18 @@ function StatisticsUI:CreateStatsContainer()
         self:SetBackdropColor(bgHover[1], bgHover[2], bgHover[3], bgHover[4])
         self:SetBackdropBorderColor(accentPrimary[1], accentPrimary[2], accentPrimary[3], 1)
         self.label:SetTextColor(textHighlight[1], textHighlight[2], textHighlight[3], 1)
-    end)
-    backBtn:SetScript("OnLeave", function(self)
-        self:SetBackdropColor(bgTertiary[1], bgTertiary[2], bgTertiary[3], bgTertiary[4])
-        self:SetBackdropBorderColor(borderPrimary[1], borderPrimary[2], borderPrimary[3], borderPrimary[4])
-        self.label:SetTextColor(textPrimary[1], textPrimary[2], textPrimary[3], 1)
-    end)
-    backBtn:SetScript("OnClick", function()
-        StatisticsUI:Hide()
-    end)
+	    end)
+	    backBtn:SetScript("OnLeave", function(self)
+	        self:SetBackdropColor(bgTertiary[1], bgTertiary[2], bgTertiary[3], bgTertiary[4])
+	        self:SetBackdropBorderColor(borderPrimary[1], borderPrimary[2], borderPrimary[3], borderPrimary[4])
+	        self.label:SetTextColor(textPrimary[1], textPrimary[2], textPrimary[3], 1)
+	    end)
+	    backBtn:SetScript("OnClick", function()
+	        StatisticsUI:Hide()
+	        if _G.HousingUINew and _G.HousingUINew.ReturnToCaller then
+	            _G.HousingUINew:ReturnToCaller()
+	        end
+	    end)
 
     -- Title
     local title = container:CreateFontString(nil, "OVERLAY", "GameFontNormalHuge")

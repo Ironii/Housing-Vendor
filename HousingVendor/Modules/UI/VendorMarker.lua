@@ -2,6 +2,7 @@
 -- Provides a UI to mark vendors with nameplate highlights (works in Midnight/Retail)
 
 local ADDON_NAME, ns = ...
+local L = (ns and ns.L) or {}
 
 local VendorMarker = {}
 VendorMarker.__index = VendorMarker
@@ -12,6 +13,7 @@ local currentNPCID = nil
 local currentVendorCoords = nil
 local nameplateFrames = {}
 local distanceUpdateFrame = nil
+local nameplateEventFrame = nil
 local debugMode = false  -- Debug mode for nameplate structure logging
 
 local function GetVendorMarkerPositionStore()
@@ -195,6 +197,44 @@ local function UpdateDistanceDisplay()
     end
 end
 
+local function StopDistanceUpdates()
+    if not distanceUpdateFrame then
+        return
+    end
+    if distanceUpdateFrame.SetScript then
+        distanceUpdateFrame:SetScript("OnUpdate", nil)
+    end
+    if distanceUpdateFrame.Hide then
+        distanceUpdateFrame:Hide()
+    end
+    distanceUpdateFrame.elapsed = nil
+end
+
+local function StartDistanceUpdates()
+    if not distanceUpdateFrame then
+        distanceUpdateFrame = CreateFrame("Frame")
+    end
+
+    if distanceUpdateFrame.Show then
+        distanceUpdateFrame:Show()
+    end
+
+    distanceUpdateFrame.elapsed = 0
+    distanceUpdateFrame:SetScript("OnUpdate", function(self, elapsed)
+        -- Auto-stop if the marker UI isn't visible (prevents idle CPU drain).
+        if not markerFrame or not markerFrame:IsShown() then
+            StopDistanceUpdates()
+            return
+        end
+
+        self.elapsed = (self.elapsed or 0) + elapsed
+        if self.elapsed >= 0.5 then
+            self.elapsed = 0
+            UpdateDistanceDisplay()
+        end
+    end)
+end
+
 -- Get or create marker storage
 local function GetMarkerStorage()
     if not HousingDB.vendorMarkers then
@@ -237,6 +277,79 @@ function VendorMarker:CreateMarkerFrame()
     end)
     frame:Hide()
 
+    frame.UpdateTheme = function(self)
+        local colors = (HousingTheme and HousingTheme.Colors) or {}
+        local bgPrimary = colors.bgPrimary or {0.08, 0.06, 0.12, 0.95}
+        local borderPrimary = colors.borderPrimary or {0.35, 0.30, 0.50, 0.8}
+        local borderAccent = colors.borderAccent or borderPrimary
+        local accentPrimary = colors.accentPrimary or {0.55, 0.65, 0.90, 1.0}
+        local textPrimary = colors.textPrimary or {0.92, 0.90, 0.96, 1.0}
+        local textSecondary = colors.textSecondary or {0.70, 0.68, 0.78, 1.0}
+        local statusError = colors.statusError or {0.90, 0.35, 0.40, 1.0}
+        local bgHover = colors.bgHover or {0.22, 0.16, 0.32, 0.95}
+
+        if HousingTheme and HousingTheme.ApplyBackdrop then
+            HousingTheme:ApplyBackdrop(self, "mainFrame", "bgPrimary", "borderAccent")
+            if self._closeBtn then
+                HousingTheme:ApplyBackdrop(self._closeBtn, "button", "bgTertiary", "borderPrimary")
+            end
+            if self.markBtn then
+                HousingTheme:ApplyBackdrop(self.markBtn, "button", "bgTertiary", "borderPrimary")
+                if self.markBtn.label then
+                    self.markBtn.label:SetTextColor(unpack(textPrimary))
+                end
+            end
+            if self.clearBtn then
+                HousingTheme:ApplyBackdrop(self.clearBtn, "button", "bgTertiary", "borderPrimary")
+                if self.clearBtn.label then
+                    self.clearBtn.label:SetTextColor(unpack(textPrimary))
+                end
+            end
+        else
+            if self.SetBackdropColor then
+                self:SetBackdropColor(bgPrimary[1], bgPrimary[2], bgPrimary[3], bgPrimary[4])
+            end
+            if self.SetBackdropBorderColor then
+                self:SetBackdropBorderColor(borderAccent[1], borderAccent[2], borderAccent[3], borderAccent[4] or 1)
+            end
+        end
+
+        if self.title then
+            self.title:SetTextColor(accentPrimary[1], accentPrimary[2], accentPrimary[3], 1)
+        end
+        if self.vendorLabel then
+            self.vendorLabel:SetTextColor(textPrimary[1], textPrimary[2], textPrimary[3], 1)
+        end
+        if self.distanceLabel then
+            self.distanceLabel:SetTextColor(textSecondary[1], textSecondary[2], textSecondary[3], 1)
+        end
+        if self._closeText then
+            self._closeText:SetTextColor(textPrimary[1], textPrimary[2], textPrimary[3], 1)
+        end
+
+        if self._closeBtn and self._closeBtn.SetScript then
+            self._closeBtn:SetScript("OnEnter", function(btn)
+                if HousingTheme and HousingTheme.ApplyBackdrop then
+                    HousingTheme:ApplyBackdrop(btn, "button", "bgHover", "statusError")
+                else
+                    btn:SetBackdropColor(bgHover[1], bgHover[2], bgHover[3], bgHover[4] or 1)
+                    btn:SetBackdropBorderColor(statusError[1], statusError[2], statusError[3], statusError[4] or 1)
+                end
+                if self._closeText then
+                    self._closeText:SetTextColor(statusError[1], statusError[2], statusError[3], 1)
+                end
+            end)
+            self._closeBtn:SetScript("OnLeave", function(btn)
+                if HousingTheme and HousingTheme.ApplyBackdrop then
+                    HousingTheme:ApplyBackdrop(btn, "button", "bgTertiary", "borderPrimary")
+                end
+                if self._closeText then
+                    self._closeText:SetTextColor(textPrimary[1], textPrimary[2], textPrimary[3], 1)
+                end
+            end)
+        end
+    end
+
     -- Apply themed backdrop
     if HousingTheme then
         HousingTheme:ApplyBackdrop(frame, "mainFrame", "bgPrimary", "borderAccent")
@@ -261,6 +374,7 @@ function VendorMarker:CreateMarkerFrame()
     else
         title:SetTextColor(0.55, 0.65, 0.90, 1.0)
     end
+    frame.title = title
 
     -- Vendor name (below title, full width to show complete name)
     local vendorLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
@@ -303,6 +417,7 @@ function VendorMarker:CreateMarkerFrame()
     clearBtn:SetScript("OnClick", function()
         VendorMarker:ClearVendorMarker()
     end)
+    frame.clearBtn = clearBtn
 
     -- Distance label (below vendor name)
     local distanceLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
@@ -376,10 +491,22 @@ function VendorMarker:CreateMarkerFrame()
     -- Also remove waypoint when frame is hidden by any means
     frame:SetScript("OnHide", function()
         RemoveTomTomWaypoint()
+        StopDistanceUpdates()
+        StopNameplateTracking()
     end)
+
+    frame._closeBtn = closeBtn
+    frame._closeText = closeText
+    frame:UpdateTheme()
 
     markerFrame = frame
     return frame
+end
+
+function VendorMarker:ApplyTheme()
+    if markerFrame and markerFrame.UpdateTheme then
+        markerFrame:UpdateTheme()
+    end
 end
 
 -- Show the marker UI for a specific vendor
@@ -400,17 +527,11 @@ function VendorMarker:ShowForVendor(vendorName, npcID, coords)
     -- Add TomTom waypoint if TomTom is available
     AddTomTomWaypoint(vendorName, coords)
 
+    -- Start nameplate tracking only while the marker UI is open/active.
+    StartNameplateTracking()
+
     -- Start distance updates
-    if not distanceUpdateFrame then
-        distanceUpdateFrame = CreateFrame("Frame")
-        distanceUpdateFrame:SetScript("OnUpdate", function(self, elapsed)
-            self.elapsed = (self.elapsed or 0) + elapsed
-            if self.elapsed >= 0.5 then
-                self.elapsed = 0
-                UpdateDistanceDisplay()
-            end
-        end)
-    end
+    StartDistanceUpdates()
 
     UpdateDistanceDisplay()
     frame:Show()
@@ -686,6 +807,53 @@ local function OnNameplateRemoved(unit)
     nameplateFrames[unit] = nil
 end
 
+local function StopNameplateTracking()
+    if not nameplateEventFrame then
+        return
+    end
+
+    -- Best-effort: restore any visible nameplates we touched.
+    for unit, npcID in pairs(nameplateFrames) do
+        local nameplate = C_NamePlate and C_NamePlate.GetNamePlateForUnit and C_NamePlate.GetNamePlateForUnit(unit) or nil
+        if nameplate then
+            ApplyNameplateHighlight(nameplate, npcID, nil, false)
+        end
+    end
+
+    if nameplateEventFrame.UnregisterAllEvents then
+        nameplateEventFrame:UnregisterAllEvents()
+    end
+    if nameplateEventFrame.SetScript then
+        nameplateEventFrame:SetScript("OnEvent", nil)
+    end
+    nameplateEventFrame = nil
+
+    nameplateFrames = {}
+end
+
+local function StartNameplateTracking()
+    if nameplateEventFrame then
+        return
+    end
+    if not IsEnabled() then
+        return
+    end
+
+    local frame = CreateFrame("Frame")
+    frame:RegisterEvent("NAME_PLATE_UNIT_ADDED")
+    frame:RegisterEvent("NAME_PLATE_UNIT_REMOVED")
+
+    frame:SetScript("OnEvent", function(_, event, unit)
+        if event == "NAME_PLATE_UNIT_ADDED" then
+            OnNameplateAdded(unit)
+        elseif event == "NAME_PLATE_UNIT_REMOVED" then
+            OnNameplateRemoved(unit)
+        end
+    end)
+
+    nameplateEventFrame = frame
+end
+
 -- Refresh all visible nameplates
 function VendorMarker:RefreshNameplates()
     for unit, npcID in pairs(nameplateFrames) do
@@ -719,23 +887,11 @@ end
 
 -- Initialize nameplate tracking
 function VendorMarker:Initialize()
-    if not IsEnabled() then
-        return
-    end
+    StartNameplateTracking()
+end
 
-    local frame = CreateFrame("Frame")
-    frame:RegisterEvent("NAME_PLATE_UNIT_ADDED")
-    frame:RegisterEvent("NAME_PLATE_UNIT_REMOVED")
-
-    frame:SetScript("OnEvent", function(self, event, unit)
-        if event == "NAME_PLATE_UNIT_ADDED" then
-            OnNameplateAdded(unit)
-        elseif event == "NAME_PLATE_UNIT_REMOVED" then
-            OnNameplateRemoved(unit)
-        end
-    end)
-
-    print("|cFF8A7FD4HousingVendor:|r Vendor marker initialized (nameplate highlighting)")
+function VendorMarker:StopNameplateTracking()
+    StopNameplateTracking()
 end
 
 -- Toggle debug mode

@@ -89,5 +89,42 @@ function ProfessionReagents:HasReagents(itemID)
     return professionReagents[itemID] ~= nil
 end
 
+-- Returns true/false if known, or nil if unknown/unavailable.
+function ProfessionReagents:IsRecipeKnown(itemID)
+    local id = tonumber(itemID)
+    if not id then return nil end
+
+    if not isLoaded then
+        self:LoadProfessionsData()
+    end
+
+    local data = professionReagents[id]
+    if not data then
+        return nil
+    end
+
+    local recipeID = tonumber(data.recipeID)
+    if recipeID and _G.C_TradeSkillUI and _G.C_TradeSkillUI.GetRecipeInfo then
+        local ok, info = pcall(_G.C_TradeSkillUI.GetRecipeInfo, recipeID)
+        if ok and info and info.learned ~= nil then
+            return info.learned == true
+        end
+    end
+
+    local spellID = tonumber(data.spellID)
+    if spellID then
+        if _G.IsPlayerSpell then
+            local ok, known = pcall(_G.IsPlayerSpell, spellID)
+            if ok then return known == true end
+        end
+        if _G.IsSpellKnown then
+            local ok, known = pcall(_G.IsSpellKnown, spellID)
+            if ok then return known == true end
+        end
+    end
+
+    return nil
+end
+
 -- Intentionally do not preload at login: reagent parsing can be memory-heavy and isn't needed
 -- unless the user opens the Preview Panel (or another UI that queries reagents).

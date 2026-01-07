@@ -65,6 +65,20 @@ function HousingUI:Initialize()
     end
     
     isInitialized = true
+
+	    if _G.HousingPlanManager and _G.HousingPlanManager.RegisterListener then
+	        _G.HousingPlanManager:RegisterListener("HousingUI_PlanButton", function(event, _, _, count)
+	            if event ~= "plan_changed" and event ~= "plan_cleared" and event ~= "plan_loaded" then
+	                return
+	            end
+	            if self._planButton and self._planButton.label and type(count) == "number" then
+	                self._planButton.label:SetText("Craft List (" .. tostring(count) .. ")")
+            elseif self._planButton and self._planButton.label then
+                local c = _G.HousingPlanManager.GetCount and _G.HousingPlanManager:GetCount() or 0
+                self._planButton.label:SetText("Craft List (" .. tostring(c) .. ")")
+            end
+        end)
+    end
 end
 
 --------------------------------------------------------------------------------
@@ -271,10 +285,34 @@ function HousingUI:CreateHeader(parent)
     local textMuted = HousingTheme.Colors.textMuted
     subtitle:SetTextColor(textMuted[1], textMuted[2], textMuted[3], 1)
 
-    -- Right side buttons container (now only Settings button)
+    -- Right side buttons container
     local buttonsContainer = CreateFrame("Frame", nil, header)
-    buttonsContainer:SetSize(190, 32)  -- Wider to fit both buttons
+    buttonsContainer:SetSize(290, 32)  -- Wider to fit 3 buttons
     buttonsContainer:SetPoint("RIGHT", -50, 0)
+
+    -- Compact UI (separate frame)
+    local modeBtn = self:CreateHeaderButton(buttonsContainer, "Compact UI", 95)
+    modeBtn:SetScript("OnClick", function()
+        if _G.HousingDB then
+            _G.HousingDB.settings = _G.HousingDB.settings or {}
+            _G.HousingDB.settings.simpleMode = true
+        end
+        local compact = _G.HousingCompactUI or _G.HousingSimpleUI
+        if compact and compact.Show then
+            self:Hide()
+            compact:Show()
+        else
+            print("|cFFFF4040HousingVendor:|r CompactUI module not available")
+        end
+    end)
+
+    -- Crafting list button
+    local planBtn = self:CreateHeaderButton(buttonsContainer, "Craft List (0)", 110)
+    planBtn:SetScript("OnClick", function()
+        if _G.HousingPlanUI and _G.HousingPlanUI.Toggle then
+            _G.HousingPlanUI:Toggle()
+        end
+    end)
 
     -- Settings button (right-most)
     local configBtn = self:CreateHeaderButton(buttonsContainer, L["BUTTON_SETTINGS"] or "Settings", 80)
@@ -296,10 +334,67 @@ function HousingUI:CreateHeader(parent)
         HousingOutstandingItemsUI:TogglePopup()
     end)
 
+    modeBtn:SetPoint("RIGHT", zonePopupBtn, "LEFT", -10, 0)
+    planBtn:SetPoint("RIGHT", modeBtn, "LEFT", -10, 0)
+    buttonsContainer:SetSize(410, 32)
+
     -- Store reference for creating navigation buttons in filter bar later
     parent.CreateHeaderButton = function(...) return self:CreateHeaderButton(...) end
     
     parent.header = header
+
+    self._planButton = planBtn
+
+    local function SetTooltip(owner, titleText, lines)
+        if not (_G.GameTooltip and _G.GameTooltip.SetOwner and _G.GameTooltip.AddLine) then
+            return
+        end
+        _G.GameTooltip:SetOwner(owner, "ANCHOR_RIGHT")
+        _G.GameTooltip:AddLine(titleText, 1, 1, 1)
+        if type(lines) == "table" then
+            for i = 1, #lines do
+                _G.GameTooltip:AddLine(lines[i], 0.85, 0.85, 0.85, true)
+            end
+        end
+        _G.GameTooltip:Show()
+    end
+
+    local function HideTooltip()
+        if _G.GameTooltip and _G.GameTooltip.Hide then
+            _G.GameTooltip:Hide()
+        end
+    end
+
+    if modeBtn and modeBtn.HookScript then
+        modeBtn:HookScript("OnEnter", function(selfBtn)
+            SetTooltip(selfBtn, "Compact UI", {
+                "Lightweight browsing view with quick filters.",
+                "Great for fast searching without the full panels.",
+            })
+        end)
+        modeBtn:HookScript("OnLeave", HideTooltip)
+    end
+
+    if planBtn and planBtn.HookScript then
+        planBtn:HookScript("OnEnter", function(selfBtn)
+            SetTooltip(selfBtn, "Crafting List", {
+                "Track decor you plan to craft.",
+                "Shows combined reagents, owned vs missing, and cost estimates.",
+                "Remove items from the list inside the Crafting List window.",
+            })
+        end)
+        planBtn:HookScript("OnLeave", HideTooltip)
+    end
+
+    if zonePopupBtn and zonePopupBtn.HookScript then
+        zonePopupBtn:HookScript("OnEnter", function(selfBtn)
+            SetTooltip(selfBtn, "Zone Popup", {
+                "Shows a small window for your current zone.",
+                "Highlights uncollected decor and where it comes from (vendors/quests/achievements/drops).",
+            })
+        end)
+        zonePopupBtn:HookScript("OnLeave", HideTooltip)
+    end
 end
 
 -- Create styled header button
@@ -557,10 +652,12 @@ function HousingUI:Show()
         end
     end
 
-    -- Auto-refresh owned decor cache (catalog snapshot) when UI opens
+    -- Auto-refresh owned decor cache (catalog snapshot) when UI opens (optional; can be disabled to reduce CPU spikes).
     if HousingCollectionAPI and HousingCollectionAPI.RefreshOwnedDecorCache then
-        local apiDisabled = HousingDB and HousingDB.settings and HousingDB.settings.disableApiCalls
-        if not apiDisabled then
+        local settings = HousingDB and HousingDB.settings
+        local wantsRefresh = not settings or settings.refreshOwnedDecorOnOpen ~= false
+        local apiDisabled = settings and settings.disableApiCalls
+        if wantsRefresh and not apiDisabled then
             HousingCollectionAPI:RefreshOwnedDecorCache(function(success)
                 if success and mainFrame and mainFrame:IsVisible() and HousingDataManager and HousingFilters and HousingItemList then
                     local allItems = HousingDataManager.GetAllItemIDs and HousingDataManager:GetAllItemIDs() or HousingDataManager:GetAllItems()
@@ -698,12 +795,32 @@ function HousingUI:Show()
     if HousingAPICache and HousingAPICache.StartCleanupTimer then
         HousingAPICache:StartCleanupTimer()
     end
+
+    if self._planButton and self._planButton.label and _G.HousingPlanManager and _G.HousingPlanManager.GetCount then
+        self._planButton.label:SetText("Craft List (" .. tostring(_G.HousingPlanManager:GetCount() or 0) .. ")")
+    end
 end
 
 function HousingUI:Hide()
     if mainFrame then
         mainFrame:Hide()
     end
+end
+
+-- If the user navigated into a sub-UI (Achievements/Reputation/Stats/AH) from Compact UI,
+-- return them back to Compact UI when they hit "Back".
+function HousingUI:ReturnToCaller()
+    if (_G.HousingUIReturnTarget == "compact" or _G.HousingUIReturnTarget == "simple") then
+        local compact = _G.HousingCompactUI or _G.HousingSimpleUI
+        if not (compact and compact.Show) then
+            return false
+        end
+        self:Hide()
+        compact:Show()
+        _G.HousingUIReturnTarget = nil
+        return true
+    end
+    return false
 end
 
 function HousingUI:CleanupAfterClose()
@@ -860,6 +977,17 @@ function HousingUI:ApplyTheme()
     if HousingOutstandingItemsUI and HousingOutstandingItemsUI.ApplyTheme then
         HousingOutstandingItemsUI:ApplyTheme()
     end
+
+    -- Refresh Materials Tracker popout
+    if HousingMaterialsTrackerUI and HousingMaterialsTrackerUI.ApplyTheme then
+        HousingMaterialsTrackerUI:ApplyTheme()
+    end
+
+    -- Refresh vendor waypoint/marker popout
+    if HousingVendorMarker and HousingVendorMarker.ApplyTheme then
+        HousingVendorMarker:ApplyTheme()
+    end
+
 end
 
 --------------------------------------------------------------------------------

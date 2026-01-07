@@ -828,19 +828,38 @@ function HousingCollectionAPI:StartEventHandlers()
     frame:SetScript("OnEvent", HandleEvent)
 
     -- Register core events
-    frame:RegisterEvent("HOUSING_CATALOG_SEARCHER_RELEASED")
+    -- Midnight Beta 5 (12.0.1) removes HOUSING_CATALOG_SEARCHER_RELEASED.
+    -- Gate by TOC so we don't rely on an event that no longer fires.
+    local _, _, _, tocVersion = GetBuildInfo()
+    tocVersion = tonumber(tocVersion) or 0
+    if tocVersion > 0 and tocVersion < 120001 then
+        frame:RegisterEvent("HOUSING_CATALOG_SEARCHER_RELEASED")
+    end
     frame:RegisterEvent("HOUSING_STORAGE_UPDATED")
     frame:RegisterEvent("ZONE_CHANGED_NEW_AREA")
     frame:RegisterEvent("PLAYER_ENTERING_WORLD")
     frame:RegisterEvent("PLAYER_LOGOUT")
 
     -- Conditionally register Midnight API event (only if available)
-    local success = pcall(function()
-        frame:RegisterEvent("HOUSING_CATALOG_UPDATED")
-        housingCatalogUpdatedRegistered = true
-    end)
-    if not success then
-        housingCatalogUpdatedRegistered = false
+    do
+        local canRegister = true
+        if _G.C_EventUtils and _G.C_EventUtils.IsEventValid then
+            local ok, valid = pcall(_G.C_EventUtils.IsEventValid, "HOUSING_CATALOG_UPDATED")
+            if ok and valid == false then
+                canRegister = false
+            end
+        end
+        if canRegister then
+            local success = pcall(function()
+                frame:RegisterEvent("HOUSING_CATALOG_UPDATED")
+                housingCatalogUpdatedRegistered = true
+            end)
+            if not success then
+                housingCatalogUpdatedRegistered = false
+            end
+        else
+            housingCatalogUpdatedRegistered = false
+        end
     end
 
     eventHandlersActive = true  -- Enable EventRegistry callback processing
@@ -1042,6 +1061,10 @@ function HousingCollectionAPI:Initialize()
     local REQUIRE_COLLECTIONS_SHOWN = false
     local safeDelayPassed = false
     local collectionsShownOnce = false
+    local SAFE_DELAY_SECONDS = 6
+    if HousingDB and HousingDB.settings and tonumber(HousingDB.settings.catalogSafeDelaySeconds) ~= nil then
+        SAFE_DELAY_SECONDS = tonumber(HousingDB.settings.catalogSafeDelaySeconds) or SAFE_DELAY_SECONDS
+    end
 
     local function TryEnableHousingCatalog()
         if _G.HousingCatalogSafeToCall then
@@ -1103,10 +1126,15 @@ function HousingCollectionAPI:Initialize()
         end
     end)
 
-    C_Timer.After(6, function()
+    if SAFE_DELAY_SECONDS <= 0 then
         safeDelayPassed = true
         TryEnableHousingCatalog()
-    end)
+    else
+        C_Timer.After(SAFE_DELAY_SECONDS, function()
+            safeDelayPassed = true
+            TryEnableHousingCatalog()
+        end)
+    end
 end
 
 -- Make globally accessible

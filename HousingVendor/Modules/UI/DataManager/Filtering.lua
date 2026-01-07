@@ -42,6 +42,58 @@ local function IsItemAvailableByID(itemID)
     return true
 end
 
+-- Search haystack cache (lowercased concatenation of fields) to reduce repeated string.lower calls.
+-- Stored on DataManager state to avoid mutating item records and to allow easy reset if needed.
+state._searchHaystackCache = state._searchHaystackCache or {}
+state._searchHaystackCacheMeta = state._searchHaystackCacheMeta or {}
+
+local function GetSearchHaystack(item)
+    if not item then return "" end
+    local itemID = item.itemID and tonumber(item.itemID) or nil
+    if not itemID then
+        -- Fallback (no stable key): compute on demand without caching.
+        local parts = {
+            tostring(item.name or ""),
+            tostring(item._searchName or ""),
+            tostring(item.zoneName or ""),
+            tostring(item.vendorName or ""),
+        }
+        if item._apiDataLoaded then
+            parts[#parts + 1] = tostring(item._apiExpansion or "")
+            parts[#parts + 1] = tostring(item._apiCategory or "")
+            parts[#parts + 1] = tostring(item._apiSubcategory or "")
+            parts[#parts + 1] = tostring(item._apiVendor or "")
+            parts[#parts + 1] = tostring(item._apiZone or "")
+        end
+        return string_lower(table_concat(parts, "\n"))
+    end
+
+    local meta = state._searchHaystackCacheMeta[itemID]
+    local apiLoaded = item._apiDataLoaded == true
+    if meta and meta.apiLoaded == apiLoaded and state._searchHaystackCache[itemID] ~= nil then
+        return state._searchHaystackCache[itemID]
+    end
+
+    local parts = {
+        tostring(item.name or ""),
+        tostring(item._searchName or ""),
+        tostring(item.zoneName or ""),
+        tostring(item.vendorName or ""),
+    }
+    if apiLoaded then
+        parts[#parts + 1] = tostring(item._apiExpansion or "")
+        parts[#parts + 1] = tostring(item._apiCategory or "")
+        parts[#parts + 1] = tostring(item._apiSubcategory or "")
+        parts[#parts + 1] = tostring(item._apiVendor or "")
+        parts[#parts + 1] = tostring(item._apiZone or "")
+    end
+
+    local haystack = string_lower(table_concat(parts, "\n"))
+    state._searchHaystackCache[itemID] = haystack
+    state._searchHaystackCacheMeta[itemID] = { apiLoaded = apiLoaded }
+    return haystack
+end
+
 -- Use shared GetFilterHash from Util (moved to Shared.lua to eliminate duplication)
 local function GetFilterHash(filters)
     return Util.GetFilterHash and Util.GetFilterHash(filters) or ""
@@ -64,7 +116,7 @@ function DataManager:FilterItems(items, filters)
     wipe(state.debugCounts)
     local filtered = state.filteredResults
     local debugCounts = state.debugCounts
-    local searchText = string.lower(filters.searchText or "")
+    local searchText = string_lower(filters.searchText or "")
 
     -- Initialize debug counters
     debugCounts.total = #items
@@ -86,28 +138,8 @@ function DataManager:FilterItems(items, filters)
         
         -- Search filter - compute lowercase on-demand (memory optimization)
         if searchText ~= "" then
-            local searchMatch = false
-            
-            -- Check core fields (convert to lowercase on-demand)
-            if string.find(string.lower(item.name or ""), searchText, 1, true) or
-               string.find(string.lower(item._searchName or ""), searchText, 1, true) or
-               string.find(string.lower(item.zoneName or ""), searchText, 1, true) or
-               string.find(string.lower(item.vendorName or ""), searchText, 1, true) then
-                searchMatch = true
-            end
-            
-            -- Check API data if available
-            if not searchMatch and item._apiDataLoaded then
-                if (item._apiExpansion and string.find(string.lower(item._apiExpansion), searchText, 1, true)) or
-                   (item._apiCategory and string.find(string.lower(item._apiCategory), searchText, 1, true)) or
-                   (item._apiSubcategory and string.find(string.lower(item._apiSubcategory), searchText, 1, true)) or
-                   (item._apiVendor and string.find(string.lower(item._apiVendor), searchText, 1, true)) or
-                   (item._apiZone and string.find(string.lower(item._apiZone), searchText, 1, true)) then
-                    searchMatch = true
-                end
-            end
-            
-            if not searchMatch then
+            local haystack = GetSearchHaystack(item)
+            if not string_find(haystack, searchText, 1, true) then
                 show = false
                 debugCounts.searchFiltered = debugCounts.searchFiltered + 1
             end
@@ -126,10 +158,19 @@ function DataManager:FilterItems(items, filters)
             if hasSelections then
                 local itemExpansion = item._apiExpansion or item.expansionName
                 
-                -- Check if item's expansion is in the selected list
-                if not filters.selectedExpansions[itemExpansion] then
-                    show = false
-                    debugCounts.expansionFiltered = debugCounts.expansionFiltered + 1
+                local isSelected = itemExpansion and filters.selectedExpansions[itemExpansion] or false
+
+                if filters.excludeExpansions then
+                    if isSelected then
+                        show = false
+                        debugCounts.expansionFiltered = debugCounts.expansionFiltered + 1
+                    end
+                else
+                    -- Include-only behavior (default)
+                    if not isSelected then
+                        show = false
+                        debugCounts.expansionFiltered = debugCounts.expansionFiltered + 1
+                    end
                 end
             end
         end
@@ -190,9 +231,11 @@ function DataManager:FilterItems(items, filters)
                 or sourceType == INTERNED_STRINGS["Reputation"]
                 or sourceType == INTERNED_STRINGS["Renown"] then
 
-                if filters.selectedSources and (filters.selectedSources[sourceType] or filters.selectedSources[tostring(sourceType)]) then
+                if not filters.excludeSources and filters.selectedSources
+                    and (filters.selectedSources[sourceType] or filters.selectedSources[tostring(sourceType)]) then
                     bypassZoneFilter = true
-                elseif filters.source and (filters.source == sourceType or filters.source == tostring(sourceType)) then
+                elseif not filters.excludeSources and filters.source
+                    and (filters.source == sourceType or filters.source == tostring(sourceType)) then
                     bypassZoneFilter = true
                 end
             end
@@ -378,10 +421,17 @@ function DataManager:FilterItems(items, filters)
                         end
                     end
                 end
-                
-                if not matchesSource then
-                    show = false
-                    debugCounts.sourceFiltered = debugCounts.sourceFiltered + 1
+
+                if filters.excludeSources then
+                    if matchesSource then
+                        show = false
+                        debugCounts.sourceFiltered = debugCounts.sourceFiltered + 1
+                    end
+                else
+                    if not matchesSource then
+                        show = false
+                        debugCounts.sourceFiltered = debugCounts.sourceFiltered + 1
+                    end
                 end
             end
         end
@@ -511,9 +561,21 @@ function DataManager:FilterItems(items, filters)
                 end
             end
             
-            if itemRequirement ~= filters.requirement then
-                show = false
-                debugCounts.requirementFiltered = debugCounts.requirementFiltered + 1
+            if filters.requirement == "Vendor" then
+                local itemSource = item._sourceType or item.sourceType or "Vendor"
+                -- Treat "Vendor" requirement as "purchased from a vendor", including reputation/renown-gated vendors.
+                local isVendorSource = (itemSource == "Vendor") or (itemSource == INTERNED_STRINGS["Vendor"])
+                    or (itemSource == "Reputation") or (itemSource == INTERNED_STRINGS["Reputation"])
+                    or (itemSource == "Renown") or (itemSource == INTERNED_STRINGS["Renown"])
+                if not isVendorSource then
+                    show = false
+                    debugCounts.requirementFiltered = debugCounts.requirementFiltered + 1
+                end
+            else
+                if itemRequirement ~= filters.requirement then
+                    show = false
+                    debugCounts.requirementFiltered = debugCounts.requirementFiltered + 1
+                end
             end
         end
 

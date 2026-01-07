@@ -473,9 +473,9 @@ local function SetBlizzardWaypoint(mapID, x, y)
             C_Timer.After(0.1, function()
                 C_SuperTrack.SetSuperTrackedUserWaypoint(true)
 
-                -- Debug: Check if super-tracking succeeded
-                if playerMapID ~= mapID then
-                    print(string.format("|cFFF2CC8FHousingVendor:|r Arrow won't show - you're in zone %d, waypoint is in zone %d. Follow the route messages!",
+                -- Blizzard's super-tracked waypoint arrow is zone-limited; if TomTom is available it will still guide you cross-zone.
+                if (not TomTom) and playerMapID ~= mapID then
+                    print(string.format("|cFFF2CC8FHousingVendor:|r Blizzard waypoint arrow only shows in the destination zone (you are in %d, destination is %d).",
                         playerMapID or 0, mapID))
                 end
             end)
@@ -739,6 +739,64 @@ function WaypointManager:SetWaypoint(item)
         end
     end
 
+    -- Same-expansion fallback: if the destination has a known portal in the Stormwind/Orgrimmar portal room,
+    -- guide the user there even when expansions match (useful for nested maps like Founder's Point vs Dornogal).
+    if isDifferentMap and (not needsPortalTravel) and HousingPortalData then
+        local portalRoom = GetPortalRoom()
+        if portalRoom then
+            local portalFromRoom = FindPortalForExpansion(portalRoom.mapID, destinationExpansion, effectiveMapID)
+            if portalFromRoom and portalFromRoom.name then
+                if currentMapID == portalRoom.mapID then
+                    if portalFromRoom.x and portalFromRoom.y then
+                        print(string.format("|cFF8A7FD4HousingVendor:|r Route to |cFF00FF00%s|r: Use portal |cFFFFFF00%s|r",
+                            vendorName or locationName,
+                            portalFromRoom.name))
+
+                        pendingDestination = { item = item, locationName = locationName }
+                        RegisterZoneEvents()
+
+                        local portalX = portalFromRoom.x / 100
+                        local portalY = portalFromRoom.y / 100
+                        SetBlizzardWaypoint(portalFromRoom.mapID, portalX, portalY, nil)
+                        SetTomTomWaypoint(portalFromRoom.mapID, portalX, portalY, portalFromRoom.name)
+                        return true
+                    end
+                else
+                    local currentZonePortal = FindPortalForExpansion(currentMapID, "Classic")
+                    if currentZonePortal and currentZonePortal.name and currentZonePortal.x and currentZonePortal.y then
+                        print(string.format("|cFF8A7FD4HousingVendor:|r Route to |cFF00FF00%s|r: Use |cFFFFFF00%s|r > %s",
+                            vendorName or locationName,
+                            currentZonePortal.name,
+                            portalRoom.zoneName))
+
+                        pendingDestination = { item = item, locationName = locationName }
+                        RegisterZoneEvents()
+
+                        local portalX = currentZonePortal.x / 100
+                        local portalY = currentZonePortal.y / 100
+                        SetBlizzardWaypoint(currentZonePortal.mapID, portalX, portalY, nil)
+                        SetTomTomWaypoint(currentZonePortal.mapID, portalX, portalY, currentZonePortal.name)
+                        return true
+                    end
+
+                    print(string.format("|cFF8A7FD4HousingVendor:|r Route to |cFF00FF00%s|r: Go to %s, use |cFFFFFF00%s|r",
+                        vendorName or locationName,
+                        portalRoom.name,
+                        portalFromRoom.name))
+
+                    pendingDestination = { item = item, locationName = locationName }
+                    RegisterZoneEvents()
+
+                    local portalX = portalRoom.x / 100
+                    local portalY = portalRoom.y / 100
+                    SetBlizzardWaypoint(portalRoom.mapID, portalX, portalY, nil)
+                    SetTomTomWaypoint(portalRoom.mapID, portalX, portalY, portalRoom.name)
+                    return true
+                end
+            end
+        end
+    end
+
     -- Special routing for Undermine: ALWAYS route through Dornogal (regardless of expansion)
     -- Undermine is accessed via portal in Dornogal, not SW/Org portal rooms
     if isDifferentMap and destinationExpansion == "The War Within" and IsSpecialTravelDestination(effectiveMapID) then
@@ -954,9 +1012,20 @@ function WaypointManager:SetWaypoint(item)
         return self:SetWaypoint(pendingItem)
     end
 
+    -- If you're on a child map of the destination zone (e.g. Founder's Point inside Dornogal),
+    -- prefer placing the waypoint on your current child map so the Blizzard arrow can appear.
+    local waypointMapID = effectiveMapID
+    if C_Map and C_Map.GetMapInfo then
+        local info = C_Map.GetMapInfo(currentMapID)
+        if info and info.parentMapID and info.parentMapID == effectiveMapID then
+            waypointMapID = currentMapID
+        end
+    end
+
     -- Try to set both waypoints and capture results
-    local blizzardSuccess, blizzardError = SetBlizzardWaypoint(effectiveMapID, x, y)
-    local tomtomSuccess, tomtomError = SetTomTomWaypoint(effectiveMapID, x, y, locationName)
+    -- If we're adjusting mapID for the Blizzard arrow, keep TomTom aligned to the same mapID too.
+    local tomtomSuccess, tomtomError = SetTomTomWaypoint(waypointMapID, x, y, locationName)
+    local blizzardSuccess, blizzardError = SetBlizzardWaypoint(waypointMapID, x, y)
 
     -- Report results
     if blizzardSuccess or tomtomSuccess then

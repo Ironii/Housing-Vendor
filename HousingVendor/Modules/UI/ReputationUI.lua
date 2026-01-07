@@ -33,6 +33,25 @@ end
 
 local modelViewerWasVisible = false
 
+local function EnsureColorTable(color, fallback)
+    if type(color) ~= "table" then
+        return { fallback[1], fallback[2], fallback[3], fallback[4] }
+    end
+    local r, g, b, a = tonumber(color[1]), tonumber(color[2]), tonumber(color[3]), tonumber(color[4])
+    if not r or not g or not b then
+        return { fallback[1], fallback[2], fallback[3], fallback[4] }
+    end
+    if a == nil then
+        a = fallback[4]
+    end
+    return { r, g, b, a }
+end
+
+local function GetThemeColors()
+    local theme = _G.HousingTheme
+    return (theme and theme.Colors) or {}
+end
+
 local function SetMainUIVisible(visible)
     if _G["HousingFilterFrame"] then
         _G["HousingFilterFrame"]:SetShown(visible)
@@ -129,13 +148,13 @@ function ReputationUI:CreateReputationContainer()
     container:Hide()
 
     -- Back button (Midnight theme styled)
-    local theme = HousingTheme or {}
-    local bgTertiary = theme.Colors.bgTertiary or {0.1, 0.1, 0.1, 1}
-    local borderPrimary = theme.Colors.borderPrimary or {0.3, 0.3, 0.3, 1}
-    local bgHover = theme.Colors.bgHover or {0.2, 0.2, 0.2, 1}
-    local accentPrimary = theme.Colors.accentPrimary or {0.8, 0.6, 0.2, 1}
-    local textPrimary = theme.Colors.textPrimary or {1, 1, 1, 1}
-    local textHighlight = theme.Colors.textHighlight or {1, 0.82, 0, 1}
+    local colors = GetThemeColors()
+    local bgTertiary = EnsureColorTable(colors.bgTertiary, { 0.1, 0.1, 0.1, 1 })
+    local borderPrimary = EnsureColorTable(colors.borderPrimary, { 0.3, 0.3, 0.3, 1 })
+    local bgHover = EnsureColorTable(colors.bgHover, { 0.2, 0.2, 0.2, 1 })
+    local accentPrimary = EnsureColorTable(colors.accentPrimary, { 0.8, 0.6, 0.2, 1 })
+    local textPrimary = EnsureColorTable(colors.textPrimary, { 1, 1, 1, 1 })
+    local textHighlight = EnsureColorTable(colors.textHighlight, { 1, 0.82, 0, 1 })
 
     local backBtn = CreateFrame("Button", nil, container, "BackdropTemplate")
     backBtn:SetSize(80, 28)
@@ -167,6 +186,9 @@ function ReputationUI:CreateReputationContainer()
     end)
     backBtn:SetScript("OnClick", function()
         ReputationUI:Hide()
+        if _G.HousingUINew and _G.HousingUINew.ReturnToCaller then
+            _G.HousingUINew:ReturnToCaller()
+        end
     end)
 
     -- Title
@@ -394,15 +416,30 @@ function ReputationUI:ShowExpansionFilterMenu(button)
 
     scrollChild:SetHeight(math.abs(yOffset))
 
-    menu:SetScript("OnHide", function(self) self:SetParent(nil) end)
-    menu:Show()
-
-    -- Click outside to close
-    menu:SetScript("OnUpdate", function(self)
-        if not self:IsMouseOver() and not button:IsMouseOver() then
-            self:Hide()
+    local clickCatcher = CreateFrame("Frame", nil, UIParent)
+    clickCatcher:SetAllPoints(UIParent)
+    clickCatcher:SetFrameStrata("DIALOG")
+    clickCatcher:SetFrameLevel(199)
+    clickCatcher:EnableMouse(true)
+    clickCatcher:SetScript("OnMouseDown", function()
+        if menu and menu.Hide then
+            menu:Hide()
         end
     end)
+
+    menu:SetScript("OnShow", function()
+        if clickCatcher and clickCatcher.Show then
+            clickCatcher:Show()
+        end
+    end)
+    menu:SetScript("OnHide", function(self)
+        if clickCatcher and clickCatcher.Hide then
+            clickCatcher:Hide()
+            clickCatcher:SetParent(nil)
+        end
+        self:SetParent(nil)
+    end)
+    menu:Show()
 end
 
 -- Show category filter menu
@@ -486,15 +523,398 @@ function ReputationUI:ShowCategoryFilterMenu(button)
 
     scrollChild:SetHeight(math.abs(yOffset))
 
-    menu:SetScript("OnHide", function(self) self:SetParent(nil) end)
-    menu:Show()
-
-    -- Click outside to close
-    menu:SetScript("OnUpdate", function(self)
-        if not self:IsMouseOver() and not button:IsMouseOver() then
-            self:Hide()
+    local clickCatcher = CreateFrame("Frame", nil, UIParent)
+    clickCatcher:SetAllPoints(UIParent)
+    clickCatcher:SetFrameStrata("DIALOG")
+    clickCatcher:SetFrameLevel(199)
+    clickCatcher:EnableMouse(true)
+    clickCatcher:SetScript("OnMouseDown", function()
+        if menu and menu.Hide then
+            menu:Hide()
         end
     end)
+
+    menu:SetScript("OnShow", function()
+        if clickCatcher and clickCatcher.Show then
+            clickCatcher:Show()
+        end
+    end)
+    menu:SetScript("OnHide", function(self)
+        if clickCatcher and clickCatcher.Hide then
+            clickCatcher:Hide()
+            clickCatcher:SetParent(nil)
+        end
+        self:SetParent(nil)
+    end)
+    menu:Show()
+end
+
+local function BuildRequiredStandingByFaction()
+    local out = {}
+    if type(HousingVendorItemToFaction) ~= "table" then
+        return out
+    end
+    for _, repInfo in pairs(HousingVendorItemToFaction) do
+        local factionID = repInfo and repInfo.factionID
+        local requiredStanding = repInfo and repInfo.requiredStanding
+        if factionID and requiredStanding and requiredStanding ~= "" then
+            local key = tostring(factionID)
+            if not out[key] then
+                out[key] = tostring(requiredStanding)
+            end
+        end
+    end
+    return out
+end
+
+local function AcquireReputationFrame(scrollChild, index)
+    scrollChild.reputations = scrollChild.reputations or {}
+    if scrollChild.reputations[index] then
+        return scrollChild.reputations[index]
+    end
+
+    local repFrame = CreateFrame("Button", nil, scrollChild, "BackdropTemplate")
+    repFrame:SetBackdrop({
+        bgFile = "Interface\\Buttons\\WHITE8x8",
+        edgeFile = "Interface\\Buttons\\WHITE8x8",
+        tile = false,
+        edgeSize = 1,
+        insets = { left = 2, right = 2, top = 2, bottom = 2 },
+    })
+    repFrame:SetBackdropColor(0.08, 0.08, 0.08, 0.9)
+    repFrame:SetBackdropBorderColor(0.25, 0.25, 0.25, 1)
+    repFrame:EnableMouse(true)
+
+    repFrame.icon = repFrame:CreateTexture(nil, "ARTWORK")
+    repFrame.icon:SetSize(40, 40)
+    repFrame.icon:SetPoint("TOPLEFT", 10, -10)
+    repFrame.icon:SetTexture("Interface\\Icons\\Achievement_Reputation_01")
+
+    repFrame.nameText = repFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+    repFrame.nameText:SetPoint("TOPLEFT", repFrame.icon, "TOPRIGHT", 12, -2)
+    repFrame.nameText:SetPoint("RIGHT", -150, 0)
+    repFrame.nameText:SetJustifyH("LEFT")
+    repFrame.nameText:SetWordWrap(false)
+
+    repFrame.detailsText = repFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    repFrame.detailsText:SetPoint("TOPLEFT", repFrame.nameText, "BOTTOMLEFT", 0, -2)
+    repFrame.detailsText:SetJustifyH("LEFT")
+
+    repFrame.standingText = repFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    repFrame.standingText:SetPoint("TOPRIGHT", -10, -10)
+
+    repFrame.accountText = repFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    repFrame.accountText:SetPoint("TOPLEFT", repFrame.detailsText, "BOTTOMLEFT", 0, -2)
+    repFrame.accountText:SetText("|cFF00CCFFAccount-wide|r")
+    repFrame.accountText:Hide()
+
+    repFrame.vendorText = repFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    repFrame.vendorText:SetPoint("RIGHT", -10, 0)
+    repFrame.vendorText:SetJustifyH("LEFT")
+    repFrame.vendorText:SetWordWrap(true)
+    repFrame.vendorText:Hide()
+
+    repFrame.progressBg = repFrame:CreateTexture(nil, "BACKGROUND")
+    repFrame.progressBg:SetColorTexture(0.2, 0.2, 0.2, 0.8)
+    repFrame.progressBg:Hide()
+
+    repFrame.progressBar = repFrame:CreateTexture(nil, "ARTWORK")
+    repFrame.progressBar:Hide()
+
+    repFrame.progressText = repFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    repFrame.progressText:Hide()
+
+    repFrame.notDiscoveredText = repFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    repFrame.notDiscoveredText:SetPoint("BOTTOMLEFT", repFrame, "BOTTOMLEFT", 62, 10)
+    repFrame.notDiscoveredText:SetText("|cFFFF6600Faction not yet discovered - Visit the zone to unlock|r")
+    repFrame.notDiscoveredText:Hide()
+
+    repFrame.arrow = repFrame:CreateTexture(nil, "OVERLAY")
+    repFrame.arrow:SetSize(16, 16)
+    repFrame.arrow:SetPoint("BOTTOMRIGHT", -10, 10)
+
+    repFrame.details = CreateFrame("Frame", nil, repFrame)
+    repFrame.details:SetPoint("TOPLEFT", 10, -68)
+    repFrame.details:SetPoint("BOTTOMRIGHT", -10, 10)
+    repFrame.details:Hide()
+
+    repFrame.detailsBg = repFrame.details:CreateTexture(nil, "BACKGROUND")
+    repFrame.detailsBg:SetAllPoints(repFrame.details)
+    repFrame.detailsBg:SetColorTexture(0, 0, 0, 0.3)
+
+    repFrame.detailsHeader = repFrame.details:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+    repFrame.detailsHeader:SetPoint("TOPLEFT", 10, -6)
+    repFrame.detailsHeader:SetText("|cFFFFD700Reputation Details|r")
+
+    local function MakeDetailLine(prev)
+        local fs = repFrame.details:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+        fs:SetJustifyH("LEFT")
+        fs:SetPoint("TOPLEFT", prev, "BOTTOMLEFT", 0, -6)
+        fs:SetPoint("RIGHT", -10, 0)
+        return fs
+    end
+
+    repFrame.detailFactionID = MakeDetailLine(repFrame.detailsHeader)
+    repFrame.detailExpansion = MakeDetailLine(repFrame.detailFactionID)
+    repFrame.detailCategory = MakeDetailLine(repFrame.detailExpansion)
+    repFrame.detailType = MakeDetailLine(repFrame.detailCategory)
+    repFrame.detailStanding = MakeDetailLine(repFrame.detailType)
+    repFrame.detailProgress = MakeDetailLine(repFrame.detailStanding)
+    repFrame.detailNext = MakeDetailLine(repFrame.detailProgress)
+
+    repFrame.vendorHeader = repFrame.details:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+    repFrame.vendorHeader:SetPoint("TOPLEFT", repFrame.detailNext, "BOTTOMLEFT", 0, -12)
+    repFrame.vendorHeader:SetText("|cFFFFD700Vendor Locations|r")
+    repFrame.vendorHeader:Hide()
+
+    repFrame.vendorLines = {}
+
+    repFrame:SetScript("OnEnter", function(self)
+        local hover = self._hvBgHover
+        if hover then
+            self:SetBackdropColor(hover[1], hover[2], hover[3], 0.9)
+        end
+
+        local repData = self._hvRepData
+        if not repData then
+            return
+        end
+
+        if not (GameTooltip and GameTooltip.SetOwner) then
+            return
+        end
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:ClearLines()
+        GameTooltip:AddLine(repData.label or "Unknown", 1, 0.82, 0, true)
+        GameTooltip:AddLine(" ")
+
+        local vendorInfo = self._hvVendorInfo
+        if vendorInfo and vendorInfo.order and #vendorInfo.order > 0 then
+            GameTooltip:AddLine("Vendors:", 0.8, 0.8, 0.8, true)
+            for _, v in ipairs(vendorInfo.order) do
+                local vendorText = v.name or "Unknown"
+                if v.location and v.location ~= "" and v.location ~= "None" then
+                    vendorText = vendorText .. " (" .. v.location .. ")"
+                end
+                if v.expansion and v.expansion ~= "" and v.expansion ~= "Unknown" then
+                    vendorText = vendorText .. " - " .. v.expansion
+                end
+                GameTooltip:AddLine("- " .. vendorText, 0.9, 0.9, 0.9, true)
+            end
+        else
+            GameTooltip:AddLine("No vendors found", 0.6, 0.6, 0.6, true)
+        end
+
+        GameTooltip:AddLine(" ")
+        GameTooltip:AddLine("Click for more details", 0.5, 0.8, 1, true)
+        GameTooltip:Show()
+    end)
+    repFrame:SetScript("OnLeave", function(self)
+        self:SetBackdropColor(0.08, 0.08, 0.08, 0.9)
+        if GameTooltip then
+            GameTooltip:Hide()
+        end
+    end)
+    repFrame:SetScript("OnClick", function(self)
+        local factionID = self._hvFactionID
+        if not factionID then
+            return
+        end
+        ReputationUI._expandedReputations[factionID] = not ReputationUI._expandedReputations[factionID]
+        ReputationUI:Refresh()
+    end)
+
+    scrollChild.reputations[index] = repFrame
+    return repFrame
+end
+
+local function UpdateReputationFrame(repFrame, repData, vendorInfo, requiredStanding, colors, isExpanded)
+    repFrame._hvRepData = repData
+    repFrame._hvFactionID = repData and repData.factionID or nil
+    repFrame._hvVendorInfo = vendorInfo
+    repFrame._hvBgHover = colors.bgHover
+
+    repFrame.nameText:SetText("|cFFFFFFFF" .. tostring(repData.label or "Unknown") .. "|r")
+
+    local expansion = repData.expansion or "Unknown"
+    local category = repData.category or "Unknown"
+
+    local reqText = ""
+    if requiredStanding and requiredStanding ~= "" then
+        reqText = " |cFF808080-|r |cFFFFD700Requires: " .. requiredStanding .. "|r"
+    end
+    repFrame.detailsText:SetText("|cFF808080Faction ID:|r " .. tostring(repData.factionID or "Unknown") .. " |cFF808080(|r" .. tostring(expansion) .. "|cFF808080)|r |cFF808080-|r |cFF00CCFF" .. tostring(category) .. "|r" .. reqText)
+
+    local standing = tostring(repData.standing or "Unknown")
+    local standingColor = "|cFF00FF00"
+    if standing == "Not Discovered" then
+        standingColor = "|cFFFF6600"
+    elseif standing:find("Exalted") or standing:find("Renown") then
+        standingColor = "|cFFFFD700"
+    elseif standing:find("Revered") then
+        standingColor = "|cFF00FF00"
+    elseif standing:find("Honored") or standing:find("Friendly") then
+        standingColor = "|cFF00CCFF"
+    else
+        standingColor = "|cFFCCCCCC"
+    end
+    repFrame.standingText:SetText(standingColor .. standing .. "|r")
+
+    repFrame.accountText:SetShown(repData.isRenown == true)
+
+    local detailAnchor = repFrame.detailsText
+    if repData.isRenown == true then
+        detailAnchor = repFrame.accountText
+    end
+
+    local vendorLine = nil
+    if vendorInfo and vendorInfo.order and #vendorInfo.order > 0 then
+        local maxVendors = 2
+        local parts = {}
+        for i, v in ipairs(vendorInfo.order) do
+            if i > maxVendors then
+                break
+            end
+            local label = v.name or "Unknown"
+            if v.location and v.location ~= "" and v.location ~= "None" then
+                label = label .. " (" .. v.location .. ")"
+            end
+            parts[#parts + 1] = label
+        end
+        vendorLine = "Vendors: " .. table.concat(parts, "; ")
+        if #vendorInfo.order > maxVendors then
+            vendorLine = vendorLine .. string.format(" +%d more", #vendorInfo.order - maxVendors)
+        end
+    end
+    if vendorLine then
+        repFrame.vendorText:ClearAllPoints()
+        repFrame.vendorText:SetPoint("TOPLEFT", detailAnchor, "BOTTOMLEFT", 0, -2)
+        repFrame.vendorText:SetPoint("RIGHT", -10, 0)
+        repFrame.vendorText:SetText(vendorLine)
+        repFrame.vendorText:Show()
+    else
+        repFrame.vendorText:Hide()
+    end
+
+    local hasProgress = repData.standing ~= "Not Discovered"
+        and repData.currentValue
+        and repData.maxValue
+        and repData.maxValue > 0
+
+    repFrame.notDiscoveredText:SetShown(repData.standing == "Not Discovered")
+
+    if hasProgress then
+        repFrame.progressBg:ClearAllPoints()
+        repFrame.progressBg:SetSize(repFrame:GetWidth() - 70, 12)
+        repFrame.progressBg:SetPoint("BOTTOMLEFT", repFrame, "BOTTOMLEFT", 62, 10)
+        repFrame.progressBg:Show()
+
+        local progress = math.min(repData.currentValue / repData.maxValue, 1)
+        repFrame.progressBar:ClearAllPoints()
+        repFrame.progressBar:SetSize((repFrame:GetWidth() - 70) * progress, 12)
+        repFrame.progressBar:SetPoint("LEFT", repFrame.progressBg, "LEFT", 0, 0)
+        if progress >= 1 then
+            repFrame.progressBar:SetColorTexture(0, 0.8, 0, 0.8)
+        else
+            repFrame.progressBar:SetColorTexture(colors.accentPrimary[1], colors.accentPrimary[2], colors.accentPrimary[3], 0.8)
+        end
+        repFrame.progressBar:Show()
+
+        repFrame.progressText:ClearAllPoints()
+        repFrame.progressText:SetPoint("LEFT", repFrame.progressBg, "RIGHT", 8, 0)
+        local percentage = math.floor(progress * 100)
+        repFrame.progressText:SetText(string.format("%d/%d (%d%%)", repData.currentValue, repData.maxValue, percentage))
+        repFrame.progressText:Show()
+    else
+        repFrame.progressBg:Hide()
+        repFrame.progressBar:Hide()
+        repFrame.progressText:Hide()
+    end
+
+    if isExpanded then
+        repFrame.arrow:SetTexture("Interface\\ChatFrame\\UI-ChatIcon-ScrollDown-Up")
+        repFrame.arrow:SetRotation(0)
+        repFrame.arrow:SetVertexColor(1, 0.82, 0, 1)
+    else
+        repFrame.arrow:SetTexture("Interface\\ChatFrame\\UI-ChatIcon-ScrollEnd-Up")
+        repFrame.arrow:SetRotation(math.rad(180))
+        repFrame.arrow:SetVertexColor(0.5, 0.5, 0.5, 1)
+    end
+
+    if repFrame.details then
+        repFrame.details:SetShown(isExpanded == true)
+        if isExpanded == true then
+            repFrame.detailFactionID:SetText("|cFF808080Faction ID:|r " .. tostring(repData.factionID or "Unknown"))
+            repFrame.detailExpansion:SetText("|cFF808080Expansion:|r " .. tostring(repData.expansion or "Unknown"))
+            repFrame.detailCategory:SetText("|cFF808080Category:|r " .. tostring(repData.category or "Unknown"))
+            if repData.isRenown then
+                repFrame.detailType:SetText("|cFF808080Type:|r Renown (Account-wide)")
+            else
+                repFrame.detailType:SetText("|cFF808080Type:|r Standard Reputation")
+            end
+            repFrame.detailStanding:SetText("|cFF808080Standing:|r " .. tostring(repData.standing or "Unknown"))
+
+            if repData.standing ~= "Not Discovered" and repData.currentValue and repData.maxValue and repData.maxValue > 0 then
+                local percentage = math.floor((repData.currentValue / repData.maxValue) * 100)
+                repFrame.detailProgress:SetText("|cFF808080Current Progress:|r " .. tostring(repData.currentValue) .. " / " .. tostring(repData.maxValue) .. " (" .. tostring(percentage) .. "%)")
+                repFrame.detailProgress:Show()
+
+                local nextText = nil
+                if not repData.isRenown and repData.standingLevel and repData.standingLevel < 8 then
+                    local repNeeded = repData.maxValue - repData.currentValue
+                    nextText = "|cFF808080To Next Standing:|r " .. tostring(repNeeded) .. " reputation needed"
+                elseif repData.isRenown and repData.currentValue < repData.maxValue then
+                    local renownNeeded = repData.maxValue - repData.currentValue
+                    nextText = "|cFF808080To Next Renown:|r " .. tostring(renownNeeded) .. " renown needed"
+                elseif (not repData.isRenown and repData.standingLevel == 8) or (repData.isRenown and repData.currentValue >= repData.maxValue) then
+                    nextText = "|cFF00FF00Maximum reputation reached!|r"
+                end
+
+                if nextText then
+                    repFrame.detailNext:SetText(nextText)
+                    repFrame.detailNext:Show()
+                else
+                    repFrame.detailNext:Hide()
+                end
+            else
+                repFrame.detailProgress:Hide()
+                repFrame.detailNext:Hide()
+            end
+
+            local vendorCount = (vendorInfo and vendorInfo.order and #vendorInfo.order) or 0
+            repFrame.vendorHeader:SetShown(vendorCount > 0)
+            if vendorCount > 0 then
+                local prev = repFrame.vendorHeader
+                for i = 1, vendorCount do
+                    local fs = repFrame.vendorLines[i]
+                    if not fs then
+                        fs = repFrame.details:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+                        fs:SetJustifyH("LEFT")
+                        fs:SetPoint("RIGHT", -10, 0)
+                        repFrame.vendorLines[i] = fs
+                    end
+                    fs:ClearAllPoints()
+                    fs:SetPoint("TOPLEFT", prev, "BOTTOMLEFT", 10, -6)
+                    fs:SetPoint("RIGHT", -10, 0)
+                    local v = vendorInfo.order[i]
+                    local vendorLabel = (v and v.name) or "Unknown"
+                    if v and v.location and v.location ~= "" and v.location ~= "None" then
+                        vendorLabel = vendorLabel .. " |cFF808080(|r" .. v.location .. "|cFF808080)|r"
+                    end
+                    fs:SetText("- " .. vendorLabel)
+                    fs:Show()
+                    prev = fs
+                end
+                for i = vendorCount + 1, #repFrame.vendorLines do
+                    repFrame.vendorLines[i]:Hide()
+                end
+            else
+                for i = 1, #repFrame.vendorLines do
+                    repFrame.vendorLines[i]:Hide()
+                end
+            end
+        end
+    end
 end
 
 -- Refresh reputation list
@@ -507,14 +927,7 @@ function ReputationUI:Refresh()
     local scrollChild = self._scrollChild
     local summaryFrame = container.summaryFrame
 
-    -- Clear existing reputation frames
-    if scrollChild.reputations then
-        for _, frame in ipairs(scrollChild.reputations) do
-            frame:Hide()
-            frame:SetParent(nil)
-        end
-    end
-    scrollChild.reputations = {}
+    scrollChild.reputations = scrollChild.reputations or {}
 
     if not HousingReputationHandler then
         return
@@ -544,16 +957,29 @@ function ReputationUI:Refresh()
         summaryFrame.text:Show()
     end
 
+    local reqByFaction = BuildRequiredStandingByFaction()
+
     -- Filter reputations
     local filteredList = {}
+    local lowerCache = self._hvLowerLabelCache or {}
+    self._hvLowerLabelCache = lowerCache
     for _, repData in ipairs(reputationList) do
         local expansion = repData.expansion or "Unknown"
         local category = repData.category or "Unknown"
 
         local matchesExpansion = (self._filterExpansion == "All" or expansion == self._filterExpansion)
         local matchesCategory = (self._filterCategory == "All" or category == self._filterCategory)
-        local matchesSearch = (self._searchText == "" or
-            (repData.label and string.find(repData.label:lower(), self._searchText, 1, true)))
+        local matchesSearch = true
+        if self._searchText ~= "" then
+            local fid = tostring(repData.factionID or "")
+            local label = tostring(repData.label or "")
+            local cached = lowerCache[fid]
+            if not cached or cached.label ~= label then
+                cached = { label = label, lower = label:lower() }
+                lowerCache[fid] = cached
+            end
+            matchesSearch = (cached.lower ~= "" and string.find(cached.lower, self._searchText, 1, true) ~= nil)
+        end
 
         if matchesExpansion and matchesCategory and matchesSearch then
             table.insert(filteredList, repData)
@@ -574,41 +1000,27 @@ function ReputationUI:Refresh()
 
     -- Display reputations
     local yOffset = -10
-    local reputations = {}
-    local theme = HousingTheme or {}
-    local accentPrimary = theme.Colors.accentPrimary or {0.8, 0.6, 0.2, 1}
-    local bgHover = theme.Colors.bgHover or {0.2, 0.2, 0.2, 1}
+    local repFrames = scrollChild.reputations or {}
+    scrollChild.reputations = repFrames
+    local baseColors = GetThemeColors()
+    local accentPrimary = EnsureColorTable(baseColors.accentPrimary, { 0.8, 0.6, 0.2, 1 })
+    local bgHover = EnsureColorTable(baseColors.bgHover, { 0.2, 0.2, 0.2, 1 })
     local repVendorIndex = BuildReputationVendorIndex()
 
+    local used = 0
     for _, repData in ipairs(filteredList) do
+        used = used + 1
         -- Check if this reputation is expanded
         local isExpanded = self._expandedReputations[repData.factionID]
 
         -- Reputation card (increased height to fit faction details)
-        local repFrame = CreateFrame("Button", nil, scrollChild, "BackdropTemplate")
+        local repFrame = AcquireReputationFrame(scrollChild, used)
         local extraLines = 0
         if repData.isRenown then
             extraLines = extraLines + 1
         end
-        local vendorLine = nil
         local vendorInfo = repVendorIndex[tostring(repData.factionID)]
         if vendorInfo and vendorInfo.order and #vendorInfo.order > 0 then
-            local maxVendors = 2
-            local parts = {}
-            for i, v in ipairs(vendorInfo.order) do
-                if i > maxVendors then
-                    break
-                end
-                local label = v.name or "Unknown"
-                if v.location and v.location ~= "" and v.location ~= "None" then
-                    label = label .. " (" .. v.location .. ")"
-                end
-                table.insert(parts, label)
-            end
-            vendorLine = "Vendors: " .. table.concat(parts, "; ")
-            if #vendorInfo.order > maxVendors then
-                vendorLine = vendorLine .. string.format(" +%d more", #vendorInfo.order - maxVendors)
-            end
             extraLines = extraLines + 1
         end
 
@@ -642,299 +1054,22 @@ function ReputationUI:Refresh()
         local repHeight = baseHeight + expandedHeight
         repFrame:SetSize(scrollChild:GetWidth() - 20, repHeight)
         repFrame:SetPoint("TOPLEFT", 10, yOffset)
-        repFrame:SetBackdrop({
-            bgFile = "Interface\\Buttons\\WHITE8x8",
-            edgeFile = "Interface\\Buttons\\WHITE8x8",
-            tile = false, edgeSize = 1,
-            insets = { left = 2, right = 2, top = 2, bottom = 2 }
-        })
-        repFrame:SetBackdropColor(0.08, 0.08, 0.08, 0.9)
-        repFrame:SetBackdropBorderColor(0.25, 0.25, 0.25, 1)
+        UpdateReputationFrame(
+            repFrame,
+            repData,
+            vendorInfo,
+            reqByFaction[tostring(repData.factionID)],
+            { accentPrimary = accentPrimary, bgHover = bgHover },
+            isExpanded == true
+        )
+        repFrame:Show()
 
-        -- Make clickable
-        repFrame:EnableMouse(true)
-        repFrame:SetScript("OnEnter", function(self)
-            self:SetBackdropColor(bgHover[1], bgHover[2], bgHover[3], 0.9)
-
-            -- Show tooltip with vendor information
-            GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-            GameTooltip:ClearLines()
-            GameTooltip:AddLine(repData.label or "Unknown", 1, 0.82, 0, true)
-            GameTooltip:AddLine(" ")
-
-            -- Add vendor information
-            local vendorInfo = repVendorIndex[tostring(repData.factionID)]
-            if vendorInfo and vendorInfo.order and #vendorInfo.order > 0 then
-                GameTooltip:AddLine("Vendors:", 0.8, 0.8, 0.8, true)
-                for i, v in ipairs(vendorInfo.order) do
-                    local vendorText = v.name or "Unknown"
-                    if v.location and v.location ~= "" and v.location ~= "None" then
-                        vendorText = vendorText .. " (" .. v.location .. ")"
-                    end
-                    GameTooltip:AddLine("  " .. vendorText, 1, 1, 1, true)
-                end
-            else
-                GameTooltip:AddLine("No vendors found", 0.6, 0.6, 0.6, true)
-            end
-
-            GameTooltip:AddLine(" ")
-            GameTooltip:AddLine("Click for more details", 0.5, 0.8, 1, true)
-            GameTooltip:Show()
-        end)
-        repFrame:SetScript("OnLeave", function(self)
-            self:SetBackdropColor(0.08, 0.08, 0.08, 0.9)
-            GameTooltip:Hide()
-        end)
-        repFrame:SetScript("OnClick", function()
-            -- Toggle expanded state
-            self._expandedReputations[repData.factionID] = not self._expandedReputations[repData.factionID]
-            -- Refresh to show/hide details
-            self:Refresh()
-        end)
-
-        -- Faction icon (using generic rep icon)
-        local icon = repFrame:CreateTexture(nil, "ARTWORK")
-        icon:SetSize(40, 40)
-        icon:SetPoint("TOPLEFT", 10, -10)
-        icon:SetTexture("Interface\\Icons\\Achievement_Reputation_01")
-
-        -- Faction name
-        local nameText = repFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-        nameText:SetPoint("TOPLEFT", icon, "TOPRIGHT", 12, -2)
-        nameText:SetPoint("RIGHT", -150, 0)
-        nameText:SetJustifyH("LEFT")
-        nameText:SetWordWrap(false)
-        nameText:SetText("|cFFFFFFFF" .. repData.label .. "|r")
-
-        -- Faction details (ID, expansion, and category)
-        local detailsText = repFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-        detailsText:SetPoint("TOPLEFT", nameText, "BOTTOMLEFT", 0, -2)
-        detailsText:SetJustifyH("LEFT")
-        local expansion = repData.expansion or "Unknown"
-        local category = repData.category or "Unknown"
-
-        -- Get reputation requirement for items from this faction
-        local reqText = ""
-        if HousingVendorItemToFaction then
-            for itemID, repInfo in pairs(HousingVendorItemToFaction) do
-                if tonumber(repInfo.factionID) == repData.factionID and repInfo.requiredStanding then
-                    reqText = " |cFF808080-|r |cFFFFD700Requires: " .. repInfo.requiredStanding .. "|r"
-                    break  -- Just need one example
-                end
-            end
-        end
-
-        detailsText:SetText("|cFF808080Faction ID:|r " .. repData.factionID .. " |cFF808080(|r" .. expansion .. "|cFF808080)|r |cFF808080-|r |cFF00CCFF" .. category .. "|r" .. reqText)
-
-        -- Standing
-        local standingText = repFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-        standingText:SetPoint("TOPRIGHT", -10, -10)
-
-        -- Color code standing
-        local standingColor = "|cFF00FF00"  -- Green for max level
-        if repData.standing == "Not Discovered" then
-            standingColor = "|cFFFF6600"  -- Orange for not discovered
-        elseif repData.standing:find("Exalted") or repData.standing:find("Renown") then
-            standingColor = "|cFFFFD700"  -- Gold for Exalted/Renown
-        elseif repData.standing:find("Revered") then
-            standingColor = "|cFF00FF00"  -- Green
-        elseif repData.standing:find("Honored") or repData.standing:find("Friendly") then
-            standingColor = "|cFF00CCFF"  -- Cyan
-        else
-            standingColor = "|cFFCCCCCC"  -- Gray
-        end
-
-        standingText:SetText(standingColor .. repData.standing .. "|r")
-
-        -- Account-wide indicator for Renown
-        local detailAnchor = detailsText
-        if repData.isRenown then
-            local accountText = repFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-            accountText:SetPoint("TOPLEFT", detailsText, "BOTTOMLEFT", 0, -2)
-            accountText:SetText("|cFF00CCFFAccount-wide|r")
-            detailAnchor = accountText
-        end
-
-        if vendorLine then
-            local vendorText = repFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-            vendorText:SetPoint("TOPLEFT", detailAnchor, "BOTTOMLEFT", 0, -2)
-            vendorText:SetPoint("RIGHT", -10, 0)
-            vendorText:SetJustifyH("LEFT")
-            vendorText:SetWordWrap(true)
-            vendorText:SetText(vendorLine)
-        end
-
-        -- Progress bar (only show if discovered)
-        if repData.standing ~= "Not Discovered" and repData.currentValue and repData.maxValue and repData.maxValue > 0 then
-            local progressBg = repFrame:CreateTexture(nil, "BACKGROUND")
-            progressBg:SetSize(repFrame:GetWidth() - 70, 12)
-            progressBg:SetPoint("BOTTOMLEFT", repFrame, "BOTTOMLEFT", 62, 10)
-            progressBg:SetColorTexture(0.2, 0.2, 0.2, 0.8)
-
-            local progress = math.min(repData.currentValue / repData.maxValue, 1)
-            local progressBar = repFrame:CreateTexture(nil, "ARTWORK")
-            progressBar:SetSize((repFrame:GetWidth() - 70) * progress, 12)
-            progressBar:SetPoint("LEFT", progressBg, "LEFT", 0, 0)
-
-            if progress >= 1 then
-                progressBar:SetColorTexture(0, 0.8, 0, 0.8)  -- Green for max
-            else
-                progressBar:SetColorTexture(accentPrimary[1], accentPrimary[2], accentPrimary[3], 0.8)
-            end
-
-            local progressText = repFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-            progressText:SetPoint("LEFT", progressBg, "RIGHT", 8, 0)
-            local percentage = math.floor(progress * 100)
-            progressText:SetText(string.format("%d/%d (%d%%)", repData.currentValue, repData.maxValue, percentage))
-        elseif repData.standing == "Not Discovered" then
-            -- Show a message for not discovered factions
-            local notDiscoveredText = repFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-            notDiscoveredText:SetPoint("BOTTOMLEFT", repFrame, "BOTTOMLEFT", 62, 10)
-            notDiscoveredText:SetText("|cFFFF6600Faction not yet discovered - Visit the zone to unlock|r")
-        end
-
-        -- Expand arrow indicator
-        local arrow = repFrame:CreateTexture(nil, "OVERLAY")
-        arrow:SetSize(16, 16)
-        arrow:SetPoint("BOTTOMRIGHT", -10, 10)
-
-        if isExpanded then
-            -- Down arrow for expanded state
-            arrow:SetTexture("Interface\\ChatFrame\\UI-ChatIcon-ScrollDown-Up")
-            arrow:SetVertexColor(1, 0.82, 0, 1)  -- Gold color
-        else
-            -- Right arrow for collapsed state
-            arrow:SetTexture("Interface\\ChatFrame\\UI-ChatIcon-ScrollEnd-Up")
-            arrow:SetRotation(math.rad(180))  -- Rotate to point right
-            arrow:SetVertexColor(0.5, 0.5, 0.5, 1)  -- Gray color
-        end
-
-        -- Expanded details section
-        if isExpanded then
-            -- Calculate starting position for expanded content (below progress bar)
-            local detailsYOffset = -70
-
-            -- Detailed information section
-            local detailsHeader = repFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-            detailsHeader:SetPoint("TOPLEFT", 20, detailsYOffset)
-            detailsHeader:SetText("|cFFFFD700Reputation Details|r")
-            detailsYOffset = detailsYOffset - 22
-
-            -- Faction ID
-            local factionIDText = repFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-            factionIDText:SetPoint("TOPLEFT", 30, detailsYOffset)
-            factionIDText:SetText("|cFF808080Faction ID:|r " .. (repData.factionID or "Unknown"))
-            detailsYOffset = detailsYOffset - 18
-
-            -- Expansion
-            local expansionText = repFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-            expansionText:SetPoint("TOPLEFT", 30, detailsYOffset)
-            expansionText:SetText("|cFF808080Expansion:|r " .. (repData.expansion or "Unknown"))
-            detailsYOffset = detailsYOffset - 18
-
-            -- Category
-            local categoryText = repFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-            categoryText:SetPoint("TOPLEFT", 30, detailsYOffset)
-            categoryText:SetText("|cFF808080Category:|r " .. (repData.category or "Unknown"))
-            detailsYOffset = detailsYOffset - 18
-
-            -- Type (Renown or Standard)
-            local typeText = repFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-            typeText:SetPoint("TOPLEFT", 30, detailsYOffset)
-            if repData.isRenown then
-                typeText:SetText("|cFF808080Type:|r Renown (Account-wide)")
-            else
-                typeText:SetText("|cFF808080Type:|r Standard Reputation")
-            end
-            detailsYOffset = detailsYOffset - 18
-
-            -- Standing
-            local standingDetailText = repFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-            standingDetailText:SetPoint("TOPLEFT", 30, detailsYOffset)
-            standingDetailText:SetText("|cFF808080Standing:|r " .. (repData.standing or "Unknown"))
-            detailsYOffset = detailsYOffset - 18
-
-            -- Current Progress (only show if not "Not Discovered")
-            if repData.standing ~= "Not Discovered" and repData.currentValue and repData.maxValue then
-                local progressDetailText = repFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-                progressDetailText:SetPoint("TOPLEFT", 30, detailsYOffset)
-                local percentage = math.floor((repData.currentValue / repData.maxValue) * 100)
-                progressDetailText:SetText("|cFF808080Current Progress:|r " .. repData.currentValue .. " / " .. repData.maxValue .. " (" .. percentage .. "%)")
-                detailsYOffset = detailsYOffset - 18
-
-                -- Reputation needed for next level
-                if not repData.isRenown and repData.standingLevel and repData.standingLevel < 8 then
-                    -- Calculate standing levels
-                    local STANDING_NAMES = {
-                        [1] = "Hated",
-                        [2] = "Hostile",
-                        [3] = "Unfriendly",
-                        [4] = "Neutral",
-                        [5] = "Friendly",
-                        [6] = "Honored",
-                        [7] = "Revered",
-                        [8] = "Exalted",
-                    }
-
-                    local nextLevel = repData.standingLevel + 1
-                    local nextStandingName = STANDING_NAMES[nextLevel]
-                    local repNeeded = repData.maxValue - repData.currentValue
-
-                    local nextLevelText = repFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-                    nextLevelText:SetPoint("TOPLEFT", 30, detailsYOffset)
-                    nextLevelText:SetText("|cFF808080To " .. nextStandingName .. ":|r " .. repNeeded .. " more reputation")
-                    detailsYOffset = detailsYOffset - 18
-                elseif repData.isRenown and repData.currentValue < repData.maxValue then
-                    -- For renown, show progress to max renown
-                    local renownNeeded = repData.maxValue - repData.currentValue
-                    local nextRenownText = repFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-                    nextRenownText:SetPoint("TOPLEFT", 30, detailsYOffset)
-                    nextRenownText:SetText("|cFF808080To Max Renown:|r " .. renownNeeded .. " more levels")
-                    detailsYOffset = detailsYOffset - 18
-                elseif (not repData.isRenown and repData.standingLevel == 8) or (repData.isRenown and repData.currentValue >= repData.maxValue) then
-                    -- Max level reached
-                    local maxLevelText = repFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-                    maxLevelText:SetPoint("TOPLEFT", 30, detailsYOffset)
-                    maxLevelText:SetText("|cFF00FF00Maximum reputation level reached!|r")
-                    detailsYOffset = detailsYOffset - 18
-                end
-            end
-
-            detailsYOffset = detailsYOffset - 4
-
-            -- Vendors section
-            if vendorInfo and vendorInfo.order and #vendorInfo.order > 0 then
-                local vendorsHeader = repFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-                vendorsHeader:SetPoint("TOPLEFT", 20, detailsYOffset)
-                vendorsHeader:SetText("|cFFFFD700Vendors|r")
-                detailsYOffset = detailsYOffset - 22
-
-                for i, v in ipairs(vendorInfo.order) do
-                    local vendorEntryText = repFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-                    vendorEntryText:SetPoint("TOPLEFT", 30, detailsYOffset)
-                    vendorEntryText:SetPoint("RIGHT", -20, 0)
-                    vendorEntryText:SetJustifyH("LEFT")
-                    local vendorLabel = v.name or "Unknown"
-                    if v.location and v.location ~= "" and v.location ~= "None" then
-                        vendorLabel = vendorLabel .. " |cFF808080(|r" .. v.location .. "|cFF808080)|r"
-                    end
-                    vendorEntryText:SetText("• " .. vendorLabel)
-                    detailsYOffset = detailsYOffset - 20
-                end
-            end
-
-            -- Add background for expanded section now that we know the size
-            local detailsBg = repFrame:CreateTexture(nil, "BACKGROUND", nil, -1)
-            detailsBg:SetPoint("TOPLEFT", 10, -68)
-            detailsBg:SetPoint("BOTTOMRIGHT", -10, math.max(detailsYOffset - 5, -repHeight + 5))
-            detailsBg:SetColorTexture(0, 0, 0, 0.3)
-        end
-
-        table.insert(reputations, repFrame)
         yOffset = yOffset - (repHeight + 8)
     end
 
-    scrollChild.reputations = reputations
+    for i = used + 1, #repFrames do
+        repFrames[i]:Hide()
+    end
     scrollChild:SetHeight(math.abs(yOffset) + 20)
 end
 

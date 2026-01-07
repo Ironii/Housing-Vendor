@@ -527,8 +527,6 @@ function DataManager:GetAllItemIDs()
             end
 
             if not skip then
-                ids[#ids + 1] = idNum
-
                 local srcType = INTERNED_STRINGS["Vendor"] or "Vendor"
                 local expName = nil
                 local qid, aid = nil, nil
@@ -581,6 +579,23 @@ function DataManager:GetAllItemIDs()
                     requirement = INTERNED_STRINGS["Profession"] or "Profession"
                 end
 
+                -- If expansion is still unknown, infer it from the first known vendor entry.
+                -- This is critical for version gating (e.g., hiding Midnight items on live clients),
+                -- because not all vendor-only items have `HousingExpansionData[*].vendor.vendorDetails.expansion`.
+                if (not expName or expName == "") and vendorIndex and vendorPool then
+                    local indices = vendorIndex[idNum]
+                    if type(indices) == "table" then
+                        for _, idx in ipairs(indices) do
+                            local v = idx and vendorPool[idx] or nil
+                            local vexp = v and v.expansion or nil
+                            if vexp and vexp ~= "" then
+                                expName = vexp
+                                break
+                            end
+                        end
+                    end
+                end
+
                 if repLookup and repLookup[idNum] then
                     local repInfo = repLookup[idNum]
                     local repType = repInfo and repInfo.rep or nil
@@ -596,6 +611,20 @@ function DataManager:GetAllItemIDs()
                         requirement = INTERNED_STRINGS["Reputation"] or "Reputation"
                     end
                 end
+
+                -- Version gating: hide unreleased expansions (e.g., Midnight) on live clients.
+                -- This applies to both Full UI and Compact UI because they share the DataManager index.
+                if expName and expName ~= "" and _G.HousingVersionFilter and _G.HousingVersionFilter.ShouldShowExpansion then
+                    local ok, show = pcall(_G.HousingVersionFilter.ShouldShowExpansion, _G.HousingVersionFilter, expName)
+                    if ok and show == false then
+                        skip = true
+                    end
+                end
+
+                if skip then
+                    -- Do not index items from filtered expansions.
+                else
+                    ids[#ids + 1] = idNum
 
                 -- Treat reputation/renown-gated vendor items as their own "source type" so the Source
                 -- filter behaves as users expect (without relying on API enrichment).
@@ -659,6 +688,7 @@ function DataManager:GetAllItemIDs()
                             end
                         end
                     end
+                end
                 end
             end
         end

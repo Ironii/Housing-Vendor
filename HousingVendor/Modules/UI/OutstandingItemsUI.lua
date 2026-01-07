@@ -211,7 +211,7 @@ function OutstandingItemsUI:CreatePopup()
         GameTooltip:SetOwner(self, "ANCHOR_TOP")
         GameTooltip:ClearLines()
         GameTooltip:SetText(L["BUTTON_MAIN_UI"] or "Main UI", 1, 1, 1, 1, true)
-        GameTooltip:AddLine(L["OUTSTANDING_MAIN_UI_TOOLTIP_DESC"] or "Opens the main HousingVendor window filtered to this zone.", 0.9, 0.9, 0.9, true)
+        GameTooltip:AddLine(L["OUTSTANDING_MAIN_UI_TOOLTIP_DESC"] or "Opens your default UI mode filtered to this zone.", 0.9, 0.9, 0.9, true)
         GameTooltip:Show()
     end)
     viewAllBtn:SetScript("OnLeave", function(self)
@@ -315,33 +315,49 @@ end
 function OutstandingItemsUI:Show(zoneName)
     self:StartEventHandlers()
 
-    -- Open main addon UI with Uncollected filter and zone filter
+    local settings = HousingDB and HousingDB.settings or nil
+    local preferCompact = settings and settings.simpleMode == true
+
+    local mapID = nil
+    if zoneName then
+        mapID = select(1, self:GetCurrentZone()) -- language-independent filtering
+    end
+
+    if preferCompact then
+        local compact = _G.HousingCompactUI or _G.HousingSimpleUI
+        if compact and compact.Show then
+            compact:Show()
+            if compact.ApplyCollectionFilter then
+                compact:ApplyCollectionFilter("Uncollected")
+            end
+            if zoneName and compact.ApplyZoneFilter then
+                compact:ApplyZoneFilter(zoneName, mapID)
+            end
+            self:OnZoneChanged()
+            return
+        end
+    end
+
+    -- Full UI: open main addon UI with Uncollected filter and zone filter
     if HousingUINew then
-        -- Show main UI if not already shown
         if not HousingUINew.mainFrame or not HousingUINew.mainFrame:IsShown() then
             HousingUINew:Show()
         end
-        
-        -- Apply filters after short delay to ensure UI is ready
+
         C_Timer.After(0.1, function()
             if HousingFilters then
-                -- Set collection filter to Uncollected
                 local collectionBtn = _G["HousingCollectionButton"]
                 if collectionBtn and collectionBtn.buttonText then
                     collectionBtn.buttonText:SetText("Uncollected")
                 end
-                
-                -- Update collection filter
+
                 if HousingFilters.currentFilters then
                     HousingFilters.currentFilters.collection = "Uncollected"
                 end
-                
-                -- Set zone filter if zoneName provided
+
                 if zoneName and HousingFilters.SetZoneFilter then
-                    local mapID, _ = self:GetCurrentZone()  -- Get mapID for language-independent filtering
                     HousingFilters:SetZoneFilter(zoneName, mapID)
                 else
-                    -- Just apply the uncollected filter
                     HousingFilters:ApplyFilters()
                 end
             end

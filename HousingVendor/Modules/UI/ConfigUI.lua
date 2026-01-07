@@ -18,6 +18,9 @@ function ConfigUI:Initialize()
     if not HousingDB then
         HousingDB = {}
     end
+    if not HousingDB.settings then
+        HousingDB.settings = {}
+    end
     
     -- Load saved settings or use defaults
     currentSettings.uiScale = HousingDB.uiScale or 1.0
@@ -180,7 +183,56 @@ function ConfigUI:CreateConfigFrame()
     end)
     
     contentY = contentY - 90
-    
+
+    -- Compact Mode (default open behavior)
+    local uiModeLabel = content:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    uiModeLabel:SetPoint("TOPLEFT", 30, contentY)
+    uiModeLabel:SetText("Compact Mode")
+    uiModeLabel:SetTextColor(textPrimary[1], textPrimary[2], textPrimary[3], 1)
+
+    local simpleModeCheckbox = CreateFrame("CheckButton", "HousingConfigSimpleModeCheckbox", content, "UICheckButtonTemplate")
+    simpleModeCheckbox:SetPoint("LEFT", uiModeLabel, "RIGHT", 10, 0)
+    simpleModeCheckbox:SetSize(24, 24)
+
+    if not HousingDB.settings then
+        HousingDB.settings = {}
+    end
+    simpleModeCheckbox:SetChecked(HousingDB.settings.simpleMode == true)
+
+    local uiModeDesc = content:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    uiModeDesc:SetPoint("TOPLEFT", uiModeLabel, "BOTTOMLEFT", 0, -8)
+    uiModeDesc:SetWidth(420)
+    uiModeDesc:SetJustifyH("LEFT")
+    uiModeDesc:SetText("When checked, /hv opens in Compact UI by default (until you uncheck it).")
+    uiModeDesc:SetTextColor(textSecondary[1], textSecondary[2], textSecondary[3], 1)
+
+    simpleModeCheckbox:SetScript("OnClick", function(self)
+        local isChecked = self:GetChecked()
+        if HousingDB and HousingDB.settings then
+            HousingDB.settings.simpleMode = isChecked and true or false
+        end
+
+        -- Auto-swap UI immediately when toggled so the setting feels direct.
+        local compact = _G.HousingCompactUI or _G.HousingSimpleUI
+        if isChecked then
+            if HousingUINew and HousingUINew.Hide then
+                pcall(function() HousingUINew:Hide() end)
+            end
+            if compact and compact.Show then
+                pcall(function() compact:Show() end)
+            end
+        else
+            if compact and compact.Hide then
+                pcall(function() compact:Hide() end)
+            end
+            if HousingUINew and HousingUINew.Show then
+                pcall(function() HousingUINew:Show() end)
+            end
+        end
+    end)
+
+    contentY = contentY - 50
+
     -- Theme Selector
     local themeLabel = content:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     themeLabel:SetPoint("TOPLEFT", 30, contentY)
@@ -370,21 +422,6 @@ function ConfigUI:CreateConfigFrame()
     end)
     
     contentY = contentY - 60
-    
-    -- Multi-Select Filters Info Section
-    local multiSelectLabel = content:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    multiSelectLabel:SetPoint("TOPLEFT", 30, contentY)
-    multiSelectLabel:SetText(L["SETTINGS_MULTI_SELECT_FILTERS"] or "Multi-Select Filters")
-    multiSelectLabel:SetTextColor(textPrimary[1], textPrimary[2], textPrimary[3], 1)
-    
-    local multiSelectDesc = content:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    multiSelectDesc:SetPoint("TOPLEFT", multiSelectLabel, "BOTTOMLEFT", 0, -8)
-    multiSelectDesc:SetWidth(420)
-    multiSelectDesc:SetJustifyH("LEFT")
-    multiSelectDesc:SetText("|cFF8A7FD4Expansion, Category, and Source|r filters now support multi-select. Click checkboxes to select multiple options and see items from all selected filters at once.")
-    multiSelectDesc:SetTextColor(textSecondary[1], textSecondary[2], textSecondary[3], 1)
-    
-    contentY = contentY - 60
 
     -- Hide Minimap Button Checkbox
     local minimapButtonLabel = content:CreateFontString(nil, "OVERLAY", "GameFontNormal")
@@ -496,6 +533,10 @@ function ConfigUI:CreateConfigFrame()
                 if HousingOutstandingItemsUI and HousingOutstandingItemsUI.ApplyInitialAutoFilter then
                     HousingOutstandingItemsUI:ApplyInitialAutoFilter()
                 end
+                local compact = _G.HousingCompactUI or _G.HousingSimpleUI
+                if compact and compact.ApplyAutoZoneFilter then
+                    pcall(function() compact:ApplyAutoZoneFilter() end)
+                end
             else
                 print("|cFFFF0000Housing|r|cFF0066FFVendor|r: Auto-filter by zone disabled")
                 -- Clear zone filter
@@ -535,11 +576,11 @@ function ConfigUI:CreateConfigFrame()
             HousingDB.settings.enableVendorMarker = isChecked
             if isChecked then
                 print("|cFFFF0000Housing|r|cFF0066FFVendor|r: Vendor marker enabled")
-                if HousingVendorMarker and HousingVendorMarker.Initialize then
-                    HousingVendorMarker:Initialize()
-                end
             else
                 print("|cFFFF0000Housing|r|cFF0066FFVendor|r: Vendor marker disabled")
+                if HousingVendorMarker and HousingVendorMarker.StopNameplateTracking then
+                    HousingVendorMarker:StopNameplateTracking()
+                end
             end
         end
     end)

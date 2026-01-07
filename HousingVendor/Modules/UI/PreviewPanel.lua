@@ -38,6 +38,11 @@ local function TryRegisterAuctionListener()
             local catalog = previewFrame._currentItem._catalogData or dataModule:GetCatalogData(itemID)
             dataModule:DisplayVendorInfo(previewFrame, previewFrame._currentItem, catalog or {})
         end
+
+        -- Also refresh reagent AH price display (reagent itemIDs differ from the decor itemID).
+        if dataModule and dataModule.DisplayReagents then
+            pcall(dataModule.DisplayReagents, dataModule, previewFrame, previewFrame._currentItem)
+        end
     end)
 
     panel._ahListenerRegistered = true

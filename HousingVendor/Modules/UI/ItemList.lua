@@ -22,6 +22,8 @@ local table_insert = table.insert
 local BUTTON_HEIGHT = 48  -- Slightly taller for modern look
 local BUTTON_SPACING = 4   -- More spacing between cards
 local VISIBLE_BUTTONS = 12 -- Fewer visible due to larger size
+local SIMPLE_ACTION_BAR_WIDTH = 300
+local PLAN_ADD_TEXTURE = "Interface\\AddOns\\HousingVendor\\Data\\Media\\add.tga"
 
 -- Theme reference
 local Theme = nil
@@ -228,6 +230,12 @@ function ItemList:Initialize(parentFrame)
     -- Register events for housing decor collection updates
     -- Primary events (may not exist in all WoW versions - use pcall for safety)
     local function SafeRegisterEvent(eventName)
+        if _G.C_EventUtils and _G.C_EventUtils.IsEventValid then
+            local ok, valid = pcall(_G.C_EventUtils.IsEventValid, eventName)
+            if ok and valid == false then
+                return false
+            end
+        end
         local success, err = pcall(function()
             eventFrame:RegisterEvent(eventName)
         end)
@@ -313,7 +321,9 @@ function ItemList:CreateItemButton(parent, index)
     local colors = theme.Colors or {}
     
     local button = CreateFrame("Button", "HousingItemButton" .. index, parent, "BackdropTemplate")
-    button:SetSize(parent:GetWidth() - 16, BUTTON_HEIGHT)
+    local initialWidth = (parent and parent.GetWidth and parent:GetWidth() or 1) - 16
+    if initialWidth < 1 then initialWidth = 1 end
+    button:SetSize(initialWidth, BUTTON_HEIGHT)
     button:SetPoint("TOPLEFT", 8, -(index - 1) * (BUTTON_HEIGHT + BUTTON_SPACING))
     
     -- Midnight theme backdrop (card style)
@@ -376,15 +386,15 @@ function ItemList:CreateItemButton(parent, index)
     iconBorder:SetBackdropBorderColor(borderPrimary[1], borderPrimary[2], borderPrimary[3], 0.8)
     button.iconBorder = iconBorder
     
-    -- Collected indicator (checkmark)
-    local collectedIcon = button:CreateTexture(nil, "OVERLAY")
-    collectedIcon:SetSize(18, 18)
-    collectedIcon:SetPoint("TOPRIGHT", icon, "TOPRIGHT", 4, 4)
-    collectedIcon:SetTexture("Interface\\RAIDFRAME\\ReadyCheck-Ready")
-    local statusSuccess = colors.statusSuccess or {0.30, 0.85, 0.50, 1.0}
-    collectedIcon:SetVertexColor(statusSuccess[1], statusSuccess[2], statusSuccess[3], 1)
-    collectedIcon:Hide()
-    button.collectedIcon = collectedIcon
+	    -- Collected indicator (checkmark)
+	    local collectedIcon = button:CreateTexture(nil, "OVERLAY")
+	    collectedIcon:SetSize(18, 18)
+	    collectedIcon:SetPoint("TOPRIGHT", icon, "TOPRIGHT", 4, 4)
+	    collectedIcon:SetTexture("Interface\\RAIDFRAME\\ReadyCheck-Ready")
+	    local statusSuccess = colors.statusSuccess or {0.30, 0.85, 0.50, 1.0}
+	    collectedIcon:SetVertexColor(statusSuccess[1], statusSuccess[2], statusSuccess[3], 1)
+	    collectedIcon:Hide()
+	    button.collectedIcon = collectedIcon
 
     -- Owned quantity text (bottom-left of icon, larger)
     local quantityText = button:CreateFontString(nil, "OVERLAY", "GameFontNormal")
@@ -405,12 +415,21 @@ function ItemList:CreateItemButton(parent, index)
     -- Vendor text (secondary, below name)
     local vendorText = button:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     vendorText:SetPoint("TOPLEFT", nameText, "BOTTOMLEFT", 0, -2)
-    vendorText:SetWidth(200)
+    vendorText:SetWidth(150)
     vendorText:SetJustifyH("LEFT")
     local textSecondary = colors.textSecondary or {0.70, 0.68, 0.78, 1.0}
     vendorText:SetTextColor(textSecondary[1], textSecondary[2], textSecondary[3], 1)
     vendorText:SetText("")
     button.vendorText = vendorText
+
+    local recipeText = button:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    recipeText:SetPoint("LEFT", vendorText, "RIGHT", 8, 0)
+    recipeText:SetWidth(120)
+    recipeText:SetJustifyH("LEFT")
+    recipeText:SetTextColor(textSecondary[1], textSecondary[2], textSecondary[3], 1)
+    recipeText:SetText("")
+    recipeText:Hide()
+    button.recipeText = recipeText
     
     -- Cost text (right side, gold accent)
     local costText = button:CreateFontString(nil, "OVERLAY", "GameFontNormal")
@@ -420,9 +439,103 @@ function ItemList:CreateItemButton(parent, index)
     costText:SetTextColor(accentGold[1], accentGold[2], accentGold[3], 1)
     button.costText = costText
 
-    -- Auction House price text (right side, above cost; only shown for profession items)
+    -- Compact UI action buttons (right side). Hidden in full UI.
+    local actionBar = CreateFrame("Frame", nil, button)
+    actionBar:SetSize(SIMPLE_ACTION_BAR_WIDTH, 24)
+    actionBar:SetPoint("RIGHT", button, "RIGHT", -10, 0)
+    actionBar:Hide()
+    if actionBar.SetFrameLevel and button.GetFrameLevel then
+        actionBar:SetFrameLevel((button:GetFrameLevel() or 0) + 2)
+    end
+    button.simpleActionBar = actionBar
+
+    local function CreateActionButton(name, label, width, iconTexture)
+        local btn = CreateFrame("Button", nil, actionBar, "BackdropTemplate")
+        btn:SetSize(width, 24)
+        if btn.SetHitRectInsets then
+            btn:SetHitRectInsets(-6, -6, -6, -6)
+        end
+        if actionBar and actionBar.GetFrameLevel and btn.SetFrameLevel then
+            btn:SetFrameLevel((actionBar:GetFrameLevel() or 0) + 2)
+        end
+        btn:SetBackdrop({
+            bgFile = "Interface\\Buttons\\WHITE8x8",
+            edgeFile = "Interface\\Buttons\\WHITE8x8",
+            tile = false,
+            edgeSize = 1,
+            insets = { left = 0, right = 0, top = 0, bottom = 0 }
+        })
+        btn:SetBackdropColor(bgTertiary[1], bgTertiary[2], bgTertiary[3], bgTertiary[4])
+        btn:SetBackdropBorderColor(borderPrimary[1], borderPrimary[2], borderPrimary[3], borderPrimary[4])
+
+        if iconTexture and iconTexture ~= "" then
+            local icon = btn:CreateTexture(nil, "ARTWORK")
+            icon:SetPoint("CENTER")
+            icon:SetSize(16, 16)
+            icon:SetTexture(iconTexture)
+            icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+            btn.icon = icon
+        else
+            local t = btn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+            t:SetPoint("CENTER")
+            t:SetText(label)
+            t:SetTextColor(textPrimary[1], textPrimary[2], textPrimary[3], 1)
+            btn.label = t
+        end
+
+        local bgHover = HousingTheme.Colors.bgHover
+        local accentPrimary = HousingTheme.Colors.accentPrimary
+        local textHighlight = HousingTheme.Colors.textHighlight
+        btn:SetScript("OnEnter", function(selfBtn)
+            selfBtn:SetBackdropColor(bgHover[1], bgHover[2], bgHover[3], bgHover[4])
+            selfBtn:SetBackdropBorderColor(accentPrimary[1], accentPrimary[2], accentPrimary[3], 1)
+            if selfBtn.label then
+                selfBtn.label:SetTextColor(textHighlight[1], textHighlight[2], textHighlight[3], 1)
+            end
+            if selfBtn.icon then
+                selfBtn.icon:SetVertexColor(textHighlight[1], textHighlight[2], textHighlight[3], 1)
+            end
+            if selfBtn.tooltipText then
+                GameTooltip:SetOwner(selfBtn, "ANCHOR_TOP")
+                GameTooltip:SetText(selfBtn.tooltipText, 1, 1, 1, 1, true)
+                GameTooltip:Show()
+            end
+        end)
+        btn:SetScript("OnLeave", function(selfBtn)
+            selfBtn:SetBackdropColor(bgTertiary[1], bgTertiary[2], bgTertiary[3], bgTertiary[4])
+            selfBtn:SetBackdropBorderColor(borderPrimary[1], borderPrimary[2], borderPrimary[3], borderPrimary[4])
+            if selfBtn.label then
+                selfBtn.label:SetTextColor(textPrimary[1], textPrimary[2], textPrimary[3], 1)
+            end
+            if selfBtn.icon then
+                selfBtn.icon:SetVertexColor(1, 1, 1, 1)
+            end
+            GameTooltip:Hide()
+        end)
+
+        btn._hvActionName = name
+        return btn
+    end
+
+    local waypointBtn = CreateActionButton("waypoint", "Waypoint", 26, "Interface\\Icons\\INV_Misc_Map02")
+    waypointBtn:SetPoint("LEFT", actionBar, "LEFT", 0, 0)
+    waypointBtn.tooltipText = "Set Waypoint\nSets a waypoint to the best vendor for this item (based on your current filters)."
+
+    local markBtn = CreateActionButton("mark", "Mark", 56)
+    markBtn:SetPoint("LEFT", waypointBtn, "RIGHT", 6, 0)
+    markBtn.tooltipText = "Show Vendor Marker\nHighlights the vendor on your screen (when available)."
+
+    local matsBtn = CreateActionButton("mats", "Mats", 26, "Interface\\Icons\\INV_Misc_Bag_10")
+    matsBtn:SetPoint("LEFT", markBtn, "RIGHT", 6, 0)
+    matsBtn.tooltipText = "Track Materials\nAdds/removes this item's crafting reagents in the materials tracker."
+
+    button.simpleWaypointBtn = waypointBtn
+    button.simpleMarkBtn = markBtn
+    button.simpleMatsBtn = matsBtn
+
+    -- Auction House price text (right side, below cost; only shown for profession items)
     local ahPriceText = button:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    ahPriceText:SetPoint("BOTTOMRIGHT", costText, "TOPRIGHT", 0, 2)
+    ahPriceText:SetPoint("TOPRIGHT", costText, "BOTTOMRIGHT", 0, -2)
     ahPriceText:SetJustifyH("RIGHT")
     ahPriceText:SetTextColor(accentGold[1], accentGold[2], accentGold[3], 1)
     ahPriceText:Hide()
@@ -435,22 +548,34 @@ function ItemList:CreateItemButton(parent, index)
     local textMuted = colors.textMuted or {0.50, 0.48, 0.58, 1.0}
     zoneText:SetTextColor(textMuted[1], textMuted[2], textMuted[3], 1)
     button.zoneText = zoneText
+
+    -- Plan toggle button (full UI only; simple UI has its own list/action bar).
+    local planBtn = CreateFrame("Button", nil, button, "BackdropTemplate")
+    planBtn:SetSize(22, 22)
+    planBtn:SetPoint("RIGHT", button, "RIGHT", -10, 0)
+    planBtn:SetBackdrop({
+        bgFile = "Interface\\Buttons\\WHITE8x8",
+        edgeFile = "Interface\\Buttons\\WHITE8x8",
+        tile = false,
+        edgeSize = 1,
+        insets = { left = 0, right = 0, top = 0, bottom = 0 }
+    })
+    planBtn:SetBackdropColor(bgTertiary[1], bgTertiary[2], bgTertiary[3], bgTertiary[4])
+    planBtn:SetBackdropBorderColor(borderPrimary[1], borderPrimary[2], borderPrimary[3], borderPrimary[4])
+
+	    local planIcon = planBtn:CreateTexture(nil, "ARTWORK")
+	    planIcon:SetAllPoints()
+	    planIcon:SetTexture(PLAN_ADD_TEXTURE)
+	    planIcon:SetTexCoord(0, 1, 0, 1)
+	    planBtn.icon = planIcon
+
+    planBtn:Hide()
+    button.planBtn = planBtn
     
     -- Make the entire button clickable
     button:EnableMouse(true)
     button:RegisterForClicks("LeftButtonUp")
-    button:SetScript("OnClick", function(self, mouseButton)
-        local item = self.itemData
-        if not item then return end
-        
-        -- Click: Show preview panel
-        if HousingPreviewPanel then
-            HousingPreviewPanel:ShowItem(item)
-        else
-            -- Silently handle missing PreviewPanel
-            -- print("|cFF8A7FD4HousingVendor:|r HousingPreviewPanel not found")
-        end
-    end)
+    button:SetScript("OnClick", function() end)
     
     -- Hover tooltip scripts are attached via a separate module to keep this file smaller.
     if HousingVendorItemListTooltip and HousingVendorItemListTooltip.AttachButton then
@@ -512,6 +637,46 @@ function ItemList:UpdateItems(items, filters)
 
     -- Update visible buttons synchronously (no delay needed)
     self:UpdateVisibleButtons()
+end
+
+-- Scroll the main list so a specific itemID is visible.
+-- Used by Compact UI when jumping into Full UI details so the list aligns with the preview panel.
+function ItemList:ScrollToItemID(itemID)
+    local id = tonumber(itemID)
+    if not id or not scrollFrame then
+        return false
+    end
+
+    if not filteredItems or #filteredItems == 0 then
+        return false
+    end
+
+    local targetIndex = nil
+    for i = 1, #filteredItems do
+        local entry = filteredItems[i]
+        if type(entry) == "number" then
+            if entry == id then
+                targetIndex = i
+                break
+            end
+        elseif type(entry) == "table" then
+            local eid = tonumber(entry.itemID or entry.id)
+            if eid == id then
+                targetIndex = i
+                break
+            end
+        end
+    end
+
+    if not targetIndex then
+        return false
+    end
+
+    local offset = (targetIndex - 1) * (BUTTON_HEIGHT + BUTTON_SPACING)
+    if offset < 0 then offset = 0 end
+    scrollFrame:SetVerticalScroll(offset)
+    self:UpdateVisibleButtons()
+    return true
 end
 
 -- Update which buttons are visible (virtual scrolling with lazy creation)
@@ -590,6 +755,13 @@ function ItemList:UpdateVisibleButtons()
             -- Update button position
             button:ClearAllPoints()
             button:SetPoint("TOPLEFT", container, "TOPLEFT", 10, -(i - 1) * (BUTTON_HEIGHT + BUTTON_SPACING))
+
+            -- Keep button width in sync when the UI is resized/re-anchored.
+            if button.SetWidth and container and container.GetWidth then
+                local w = (container:GetWidth() or 0) - 20
+                if w < 1 then w = 1 end
+                button:SetWidth(w)
+            end
             
             -- Update button data
             button.itemData = item
@@ -691,6 +863,12 @@ function ItemList:ReRegisterEvents()
     if not eventFrame then return end
 
     local function SafeRegisterEvent(eventName)
+        if _G.C_EventUtils and _G.C_EventUtils.IsEventValid then
+            local ok, valid = pcall(_G.C_EventUtils.IsEventValid, eventName)
+            if ok and valid == false then
+                return false
+            end
+        end
         local success = pcall(function()
             eventFrame:RegisterEvent(eventName)
         end)

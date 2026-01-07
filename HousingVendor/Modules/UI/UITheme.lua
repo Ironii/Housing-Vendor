@@ -317,6 +317,9 @@ HousingTheme.Dimensions = {
     mainFrameHeight = 700,
     mainFrameMinWidth = 900,
     mainFrameMinHeight = 550,
+
+    -- Compact frame
+    compactFrameWidth = 600,
     
     -- Header
     headerHeight = 50,

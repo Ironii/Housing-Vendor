@@ -244,6 +244,10 @@ function PreviewPanelData:ShowItem(previewFrame, item)
     previewFrame:Show()
     
     previewFrame._currentItem = item
+
+    if previewFrame.UpdateReturnToCompactVisibility then
+        pcall(previewFrame.UpdateReturnToCompactVisibility, previewFrame)
+    end
     
     local numericItemID = tonumber(item.itemID)
     local catalogData = self:GetCatalogData(numericItemID)

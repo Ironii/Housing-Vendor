@@ -395,8 +395,117 @@ end
 local function OnRegularItemButtonClick(button)
     local item = button and button.itemData
     if not item then return end
+
     if HousingPreviewPanel then
         HousingPreviewPanel:ShowItem(item)
+    end
+end
+
+local function GetBestVendorContext(item)
+    local filters = _G.HousingFilters and _G.HousingFilters.currentFilters or {}
+    local filterVendor = filters and filters.vendor
+    local filterZone = filters and filters.zone
+    local filterMapID = filters and filters.zoneMapID
+
+    local vendorName = nil
+    local coords = nil
+    if _G.HousingVendorHelper then
+        vendorName = _G.HousingVendorHelper:GetVendorName(item, filterVendor, filterZone, filterMapID)
+        coords = _G.HousingVendorHelper:GetVendorCoords(item, filterVendor, filterZone, filterMapID)
+    else
+        vendorName = item and (item.vendorName or item._apiVendor) or nil
+        coords = item and (item.coords or item.vendorCoords) or nil
+    end
+
+    return vendorName, coords
+end
+
+local function GetBestWaypointContext(item, itemID, isProfessionItem)
+    if isProfessionItem and itemID then
+        local hv = _G.HousingVendor
+        local pt = hv and hv.ProfessionTrainers
+        if pt and pt.GetTrainerForItem then
+            local trainer = pt:GetTrainerForItem(itemID, item)
+            local coords = trainer and trainer.coords or nil
+            local x = coords and tonumber(coords.x) or nil
+            local y = coords and tonumber(coords.y) or nil
+            local mapID = coords and tonumber(coords.mapID) or nil
+            if x and y and mapID and x > 0 and y > 0 and mapID > 0 then
+                return (trainer and trainer.name) or "Trainer", (trainer and trainer.location) or nil, coords, "trainer"
+            end
+        end
+    end
+
+    local vendorName, coords = GetBestVendorContext(item)
+    local zoneName = nil
+    if _G.HousingVendorHelper and _G.HousingVendorHelper.GetZoneName then
+        local Filters = _G.HousingFilters
+        local filterZone = Filters and Filters.currentFilters and Filters.currentFilters.zone
+        local filterMapID = Filters and Filters.currentFilters and Filters.currentFilters.zoneMapID
+        zoneName = _G.HousingVendorHelper:GetZoneName(item, filterZone, filterMapID)
+    else
+        zoneName = item and (item._apiZone or item.zoneName) or nil
+    end
+    return vendorName, zoneName, coords, "vendor"
+end
+
+local function SetActionEnabled(btn, enabled)
+    if not btn then return end
+    if btn.SetEnabled then
+        btn:SetEnabled(enabled == true)
+    end
+    btn:SetAlpha((enabled == true) and 1 or 0.4)
+end
+
+local function IsSimpleUIActive() return false end
+
+local function SetActionShown(btn, shown)
+    if not btn then return end
+    if btn.SetShown then
+        btn:SetShown(shown == true)
+    else
+        if shown == true and btn.Show then
+            btn:Show()
+        elseif shown ~= true and btn.Hide then
+            btn:Hide()
+        end
+    end
+end
+
+local function LayoutSimpleActionBar(button)
+    if not (button and button.simpleActionBar) then
+        return
+    end
+
+    local bar = button.simpleActionBar
+    local order = { button.simpleWaypointBtn, button.simpleMarkBtn, button.simpleMatsBtn }
+    local spacing = 6
+    local prev = nil
+    local totalWidth = 0
+
+    for i = 1, #order do
+        local b = order[i]
+        if b and b.IsShown and b:IsShown() then
+            b:ClearAllPoints()
+            if prev then
+                b:SetPoint("LEFT", prev, "RIGHT", spacing, 0)
+                totalWidth = totalWidth + spacing
+            else
+                b:SetPoint("LEFT", bar, "LEFT", 0, 0)
+            end
+            local w = b.GetWidth and b:GetWidth() or 0
+            totalWidth = totalWidth + (w or 0)
+            prev = b
+        end
+    end
+
+    -- Avoid zero width (keeps anchoring stable).
+    if totalWidth < 1 then
+        totalWidth = 1
+    end
+
+    if bar.SetWidth then
+        bar:SetWidth(totalWidth)
     end
 end
 
@@ -694,100 +803,32 @@ local function PopulateVendorAndCostOnce(button, item, itemID)
         end
     end
 
-    if button.vendorText then
-        local Filters = _G.HousingFilters
-        local filterVendor = Filters and Filters.currentFilters and Filters.currentFilters.vendor or nil
-        if _G.HousingVendorHelper then
-            local staticVendor = _G.HousingVendorHelper:GetVendorName(item, filterVendor)
-            if staticVendor and staticVendor ~= "" then
-                button.vendorText:SetText(staticVendor)
-                button.vendorText:Show()
-                button._hvVendorDone = true
-            end
-        end
+    -- Shared vendor + cost resolver (keeps Full UI and Compact UI consistent).
+    do
+        local resolver = _G.HousingVendorCostResolver
+        if resolver and resolver.Resolve then
+            local Filters = _G.HousingFilters
+            local filterVendor = Filters and Filters.currentFilters and Filters.currentFilters.vendor or nil
+            local resolved = resolver:Resolve(item, itemID, { filterVendor = filterVendor, catalogData = catalogData })
+            if resolved then
+                if button.vendorText then
+                    local currentVendor = button.vendorText:GetText()
+                    if (not currentVendor or currentVendor == "") and resolved.vendorName and resolved.vendorName ~= "" then
+                        button.vendorText:SetText(resolved.vendorName)
+                        button.vendorText:Show()
+                        button._hvVendorDone = true
+                    end
+                end
 
-        local currentVendor = button.vendorText:GetText()
-        if (not currentVendor or currentVendor == "") and catalogData and catalogData.vendor and catalogData.vendor ~= "" then
-            button.vendorText:SetText(catalogData.vendor)
-            button.vendorText:Show()
-            button._hvVendorDone = true
-        end
-    end
-
-    if (not item or not item.cost or item.cost == "") and catalogData and button.costText and catalogData.cost and catalogData.cost ~= "" then
-        local current = button.costText:GetText()
-        if not current or current == "" or current == "..." or current ~= catalogData.cost then
-            local decorated = ApplyStaticCostIcons(catalogData.cost, item and item._staticCostComponents)
-            local canUpgrade = (not current or current == "" or current == "...")
-                or (type(current) == "string" and not string_find(current, "|T", 1, true) and string_find(catalogData.cost, "|T", 1, true))
-            if canUpgrade then
-                button.costText:SetText(decorated)
-            end
-        end
-        button.costText:Show()
-        button._hvCostDone = true
-        button._hvCostSource = "catalog"
-    end
-
-    if button._hvCostDone and button._hvVendorDone
-        and button._hvCostSource == "vendor" then
-        return
-    end
-
-    local enrichedVendors = nil
-    if HousingDataEnrichment then
-        enrichedVendors = HousingDataEnrichment:GetVendorInfo(itemID)
-    end
-    if enrichedVendors and #enrichedVendors > 0 then
-        local vendor = enrichedVendors[1]
-        if button.vendorText and vendor.name and vendor.name ~= "" then
-            button.vendorText:SetText(vendor.name)
-            button.vendorText:Show()
-            button._hvVendorDone = true
-        end
-        if button.costText and vendor.price and vendor.currency and vendor.price > 0 then
-            local costText = (vendor.currency == "Gold")
-                and string_format("%dg", vendor.price)
-                or string_format("%d %s", vendor.price, vendor.currency)
-            local current = button.costText:GetText()
-            if not current or current == "" or current == "..." or current ~= costText then
-                button.costText:SetText(costText)
-            end
-            button.costText:Show()
-            button._hvCostDone = true
-            button._hvCostSource = "vendor"
-        end
-        return
-    end
-
-    local vendorInfo = nil
-    local baseInfo = HousingAPI:GetDecorItemInfoFromItemID(itemID)
-    if baseInfo and baseInfo.decorID then
-        if HousingAPICache and HousingAPICache.GetVendorInfo then
-            vendorInfo = HousingAPICache:GetVendorInfo(baseInfo.decorID)
-        else
-            vendorInfo = HousingAPI:GetDecorVendorInfo(baseInfo.decorID)
-        end
-    end
-
-    if vendorInfo then
-        if button.vendorText then
-            local currentVendor = button.vendorText:GetText()
-            if (not currentVendor or currentVendor == "") and vendorInfo.name and vendorInfo.name ~= "" then
-                button.vendorText:SetText(vendorInfo.name)
-                button.vendorText:Show()
-                button._hvVendorDone = true
-            end
-        end
-
-        if button.costText then
-            local currentCost = button.costText:GetText()
-            local formatted = FormatCostFromVendorInfo(vendorInfo)
-            if formatted and formatted ~= "" and currentCost ~= formatted then
-                button.costText:SetText(formatted)
-                button.costText:Show()
-                button._hvCostDone = true
-                button._hvCostSource = "vendor"
+                if button.costText then
+                    local currentCost = button.costText:GetText()
+                    if resolved.costText and resolved.costText ~= "" and (not currentCost or currentCost == "" or currentCost == "..." or currentCost ~= resolved.costText) then
+                        button.costText:SetText(resolved.costText)
+                        button.costText:Show()
+                        button._hvCostDone = true
+                        button._hvCostSource = resolved.costSource or button._hvCostSource
+                    end
+                end
             end
         end
     end
@@ -798,6 +839,14 @@ function ItemList:UpdateSpecialViewItemButton(button, item)
     if not button or not item then return end
 
     button.itemData = item
+
+    if button.simpleActionBar then
+        button.simpleActionBar:Hide()
+    end
+    if button.costText and button.costText.ClearAllPoints then
+        button.costText:ClearAllPoints()
+        button.costText:SetPoint("RIGHT", button, "RIGHT", -12, 0)
+    end
 
     -- Determine the type and set appropriate visuals
     local viewType = "Item"
@@ -846,6 +895,10 @@ function ItemList:UpdateSpecialViewItemButton(button, item)
     if button.mapIcon then
         button.mapIcon:Hide()
     end
+
+    if button.planBtn then
+        button.planBtn:Hide()
+    end
     
     -- Set a generic icon for special views
     if button.icon then
@@ -881,6 +934,72 @@ function ItemList:UpdateRegularItemButton(button, item, buttonIndex)
     end
 
     button.itemData = item
+
+    local simpleMode = IsSimpleUIActive()
+
+    if button.simpleActionBar and button.simpleActionBar.SetShown then
+        button.simpleActionBar:SetShown(simpleMode == true)
+    end
+
+    if button.costText and button.costText.ClearAllPoints then
+        button.costText:ClearAllPoints()
+        if simpleMode and button.simpleActionBar then
+            button.costText:SetPoint("RIGHT", button.simpleActionBar, "LEFT", -12, 0)
+        else
+            button.costText:SetPoint("RIGHT", button, "RIGHT", -12, 0)
+        end
+    end
+
+    if simpleMode and not button._hvSimpleActionsSetup then
+        button._hvSimpleActionsSetup = true
+
+        if button.simpleWaypointBtn then
+            button.simpleWaypointBtn:SetScript("OnClick", function()
+                local rowItem = button.itemData
+                if not rowItem then return end
+                local rid = tonumber(rowItem.itemID)
+                local isProf = rid and IsProfessionItem(rowItem, rid) or false
+                local name, zoneName, coords = GetBestWaypointContext(rowItem, rid, isProf)
+                if not (coords and coords.x and coords.y) then return end
+
+                local temp = {
+                    coords = coords,
+                    mapID = coords.mapID or rowItem.mapID or rowItem.zoneMapID,
+                    vendorName = name,
+                    zoneName = zoneName,
+                    _apiZone = zoneName,
+                    npcID = rowItem.npcID,
+                    expansionName = rowItem.expansionName,
+                }
+                if _G.HousingWaypointManager and _G.HousingWaypointManager.SetWaypoint then
+                    _G.HousingWaypointManager:SetWaypoint(temp)
+                end
+            end)
+        end
+
+        if button.simpleMarkBtn then
+            button.simpleMarkBtn:SetScript("OnClick", function()
+                local rowItem = button.itemData
+                if not rowItem then return end
+                local vendorName, coords = GetBestVendorContext(rowItem)
+                if _G.HousingVendorMarker and _G.HousingVendorMarker.ShowForVendor then
+                    _G.HousingVendorMarker:ShowForVendor(vendorName, rowItem.npcID, coords)
+                end
+            end)
+        end
+
+        if button.simpleMatsBtn then
+            button.simpleMatsBtn:SetScript("OnClick", function()
+                local rowItem = button.itemData
+                if not rowItem then return end
+                local id = tonumber(rowItem.itemID)
+                if not id then return end
+                if _G.HousingMaterialsTrackerUI and _G.HousingMaterialsTrackerUI.ToggleForItem then
+                    _G.HousingMaterialsTrackerUI:ToggleForItem(id)
+                end
+            end)
+        end
+    end
     
     -- Determine source type - prioritize API data over static data
     local isAchievement = false
@@ -1035,6 +1154,94 @@ function ItemList:UpdateRegularItemButton(button, item, buttonIndex)
         button.zoneText:SetText(zoneName)
     end
 
+    -- Plan toggle button (full UI list).
+    if button.planBtn and button.planBtn.SetShown then
+        local pm = _G.HousingPlanManager
+        local itemID = tonumber(item.itemID)
+        local hasReagents = IsProfessionItem(item, itemID)
+        local showPlanBtn = (pm and pm.ToggleItem and pm.IsInPlan) and hasReagents
+        button.planBtn:SetShown(showPlanBtn == true)
+
+        local inPlan = false
+        if showPlanBtn and itemID and pm and pm.IsInPlan then
+            inPlan = pm:IsInPlan(itemID)
+        end
+
+        if button.planBtn.icon then
+            if inPlan then
+                button.planBtn.icon:SetTexture("Interface\\Buttons\\UI-CheckBox-Check")
+                button.planBtn.icon:SetTexCoord(0, 1, 0, 1)
+            else
+                button.planBtn.icon:SetTexture("Interface\\AddOns\\HousingVendor\\Data\\Media\\add.tga")
+                button.planBtn.icon:SetTexCoord(0, 1, 0, 1)
+            end
+        end
+
+	        if not button.planBtn._hvSetup then
+	            button.planBtn._hvSetup = true
+	            button.planBtn:SetScript("OnClick", function()
+	                local rowItem = button.itemData
+	                local rid = rowItem and tonumber(rowItem.itemID)
+	                local mgr = _G.HousingPlanManager
+	                if mgr and rid and mgr.ToggleItem then
+	                    mgr:ToggleItem(rid)
+	
+	                    local isIn = mgr.IsInPlan and mgr:IsInPlan(rid)
+	                    if button.planBtn and button.planBtn.icon then
+	                        if isIn then
+	                            button.planBtn.icon:SetTexture("Interface\\Buttons\\UI-CheckBox-Check")
+	                            button.planBtn.icon:SetTexCoord(0, 1, 0, 1)
+	                        else
+	                            button.planBtn.icon:SetTexture("Interface\\AddOns\\HousingVendor\\Data\\Media\\add.tga")
+	                            button.planBtn.icon:SetTexCoord(0, 1, 0, 1)
+	                        end
+	                    end
+	                end
+	            end)
+
+            button.planBtn:SetScript("OnEnter", function(selfBtn)
+                local rowItem = button.itemData
+                local rid = rowItem and tonumber(rowItem.itemID)
+                local mgr = _G.HousingPlanManager
+                local isIn = mgr and rid and mgr.IsInPlan and mgr:IsInPlan(rid)
+                GameTooltip:SetOwner(selfBtn, "ANCHOR_TOP")
+                GameTooltip:SetText(isIn and "Remove from Crafting List" or "Add to Crafting List", 1, 1, 1, 1, true)
+                GameTooltip:Show()
+            end)
+            button.planBtn:SetScript("OnLeave", function()
+                GameTooltip:Hide()
+            end)
+        end
+
+        if button.costText and button.costText.ClearAllPoints then
+            button.costText:ClearAllPoints()
+            button.costText:SetPoint("RIGHT", button.planBtn, "LEFT", -10, 0)
+        end
+    end
+
+    if simpleMode then
+        local itemID = tonumber(item.itemID)
+        local hasMats = IsProfessionItem(item, itemID)
+        local _, _, coords, waypointContext = GetBestWaypointContext(item, itemID, hasMats)
+        local hasCoords = coords and coords.x and coords.y
+
+        -- Only show icons when they can do something useful.
+        SetActionShown(button.simpleWaypointBtn, hasCoords)
+        SetActionShown(button.simpleMarkBtn, hasCoords and waypointContext == "vendor")
+        SetActionShown(button.simpleMatsBtn, hasMats)
+        LayoutSimpleActionBar(button)
+
+        SetActionEnabled(button.simpleWaypointBtn, hasCoords)
+        SetActionEnabled(button.simpleMarkBtn, hasCoords and waypointContext == "vendor")
+        SetActionEnabled(button.simpleMatsBtn, hasMats)
+
+        if button.simpleWaypointBtn then
+            button.simpleWaypointBtn.tooltipText = (waypointContext == "trainer")
+                and "Set Waypoint (Trainer)\nSets a waypoint to the trainer who teaches this recipe (when available)."
+                or "Set Waypoint\nSets a waypoint to the best vendor for this item (based on your current filters)."
+        end
+    end
+
     -- Display owned quantity if available (from cached API data)
     if button.quantityText then
         local numStored = item._apiNumStored or 0
@@ -1111,11 +1318,8 @@ function ItemList:UpdateRegularItemButton(button, item, buttonIndex)
 
         if button.zoneText then
             button.zoneText:ClearAllPoints()
-            if showAh then
-                button.zoneText:SetPoint("BOTTOMRIGHT", button.ahPriceText, "TOPRIGHT", 0, 2)
-            else
-                button.zoneText:SetPoint("BOTTOMRIGHT", button.costText, "TOPRIGHT", 0, 2)
-            end
+            -- Keep location inside the row: zone above cost, AH below cost.
+            button.zoneText:SetPoint("BOTTOMRIGHT", button.costText, "TOPRIGHT", 0, 2)
         end
     end
 
@@ -1295,7 +1499,36 @@ function ItemList:UpdateRegularItemButton(button, item, buttonIndex)
             button.collectedIcon:Hide()
         end
     end
-    
+
+    -- Crafted recipe-known label (profession items only; requires TradeSkill cache)
+    if button.recipeText then
+        local known = nil
+        local hv = _G.HousingVendor
+        local pr = hv and hv.ProfessionReagents
+        local hasReagents = pr and pr.HasReagents and itemID and pr:HasReagents(tonumber(itemID)) or false
+
+        if hasReagents then
+            if pr and pr.IsRecipeKnown then
+                known = pr:IsRecipeKnown(tonumber(itemID))
+            end
+            local theme = GetTheme()
+            local colors = theme.Colors or {}
+            local statusSuccess = colors.statusSuccess or { 0.30, 0.85, 0.50, 1.0 }
+
+            if known == true then
+                button.recipeText:SetText("Recipe Known")
+                button.recipeText:SetTextColor(statusSuccess[1], statusSuccess[2], statusSuccess[3], 1)
+                button.recipeText:Show()
+            else
+                button.recipeText:SetText("")
+                button.recipeText:Hide()
+            end
+        else
+            button.recipeText:SetText("")
+            button.recipeText:Hide()
+        end
+    end
+     
     -- Restore default click behavior for regular items (preview panel only)
     SetClickHandler(button, "regular", OnRegularItemButtonClick)
 end

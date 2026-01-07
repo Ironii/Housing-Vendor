@@ -246,6 +246,9 @@ function AuctionHouseUI:_CreateContainer()
     end)
     backBtn:SetScript("OnClick", function()
         self:Hide()
+        if _G.HousingUINew and _G.HousingUINew.ReturnToCaller then
+            _G.HousingUINew:ReturnToCaller()
+        end
     end)
     backBtn:SetFrameLevel((container:GetFrameLevel() or 0) + 20)
 

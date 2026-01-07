@@ -29,6 +29,9 @@ local function DebugLog(...)
     end
 end
 
+-- Forward declarations (used by helpers defined earlier in the file).
+local EnsureCache
+
 local function EnsureAddOnLoaded(addonName)
     if type(addonName) ~= "string" or addonName == "" then
         return false
@@ -76,6 +79,12 @@ local function GetTSMPriceSource()
 end
 
 local function GetItemLinkForAddonPricing(itemID, fallbackLink)
+    if C_Item and C_Item.GetItemLinkByID then
+        local ok, link = pcall(C_Item.GetItemLinkByID, itemID)
+        if ok and link then
+            return link
+        end
+    end
     if C_Item and C_Item.GetItemInfo then
         local _, link = C_Item.GetItemInfo(itemID)
         if link then
@@ -86,6 +95,19 @@ local function GetItemLinkForAddonPricing(itemID, fallbackLink)
         pcall(C_Item.RequestLoadItemDataByID, itemID)
     end
     return fallbackLink
+end
+
+local function BuildFallbackItemLink(itemID)
+    local id = tonumber(itemID) or 0
+    local name = nil
+    if C_Item and C_Item.GetItemNameByID then
+        local ok, n = pcall(C_Item.GetItemNameByID, id)
+        if ok and n then
+            name = n
+        end
+    end
+    name = name or ("item:" .. tostring(id))
+    return string.format("|cffffffff|Hitem:%d:::::::::|h[%s]|h|r", id, name)
 end
 
 function AuctionHouseAPI:_TryGetTSMPrice(itemID)
@@ -121,7 +143,7 @@ function AuctionHouseAPI:_TryGetAuctionatorPrice(itemID)
         return nil
     end
 
-    local itemLink = GetItemLinkForAddonPricing(itemID, string.format("|Hitem:%d:::::::::|h|h|r", itemID))
+    local itemLink = GetItemLinkForAddonPricing(itemID, BuildFallbackItemLink(itemID))
     local okPrice, price = pcall(auctionator.API.v1.GetAuctionPriceByItemLink, "HousingVendor", itemLink)
     if not okPrice then
         return nil
@@ -132,6 +154,47 @@ function AuctionHouseAPI:_TryGetAuctionatorPrice(itemID)
         return price
     end
     return nil
+end
+
+-- Public helper: try to fetch an addon-provided price (Auctionator/TSM) on-demand, and cache it.
+-- Useful when itemLinks weren't loaded yet during a bulk scan.
+function AuctionHouseAPI:GetOrFetchAddonPrice(itemID)
+    local idNum = tonumber(itemID)
+    if not idNum then
+        return nil, nil
+    end
+
+    self:Initialize()
+    if EnsureCache then
+        EnsureCache()
+    end
+
+    -- Return cached price if present
+    local cachedPrice, cachedAt = self:GetCachedPrice(idNum)
+    if cachedPrice and cachedPrice > 0 then
+        return cachedPrice, cachedAt
+    end
+
+    -- Throttle repeated misses per session
+    self._addonPriceSession = self._addonPriceSession or {}
+    local now = time()
+    local st = self._addonPriceSession[idNum]
+    if st and st.lastTried and (now - st.lastTried) < 15 then
+        return nil, nil
+    end
+    st = st or {}
+    st.lastTried = now
+    self._addonPriceSession[idNum] = st
+
+    local price, source, attempted = self:_TryGetAddonPrice(idNum)
+    price = tonumber(price)
+    if attempted and price and price > 0 then
+        self:CachePrice(idNum, price)
+        self:NotifyListeners("price_updated", idNum, price, source)
+        return price, now
+    end
+
+    return nil, nil
 end
 
 function AuctionHouseAPI:_TryGetAddonPrice(itemID)
@@ -196,7 +259,7 @@ local function GetPriceSortOrder()
     return 0
 end
 
-local function EnsureCache()
+EnsureCache = function()
     if not _G.HousingDB then
         return
     end
@@ -913,6 +976,33 @@ function AuctionHouseAPI:CachePrice(itemID, price)
         price = price,
         time = time(),
     }
+
+    -- Prevent unbounded SavedVariables growth.
+    do
+        local settings = _G.HousingDB and _G.HousingDB.settings
+        local maxEntries = settings and tonumber(settings.ahPriceMaxEntries)
+        if maxEntries and maxEntries > 0 then
+            local items = _G.HousingDB.auctionCache.items
+            local count = 0
+            for _ in pairs(items) do
+                count = count + 1
+                if count > maxEntries then
+                    break
+                end
+            end
+            if count > maxEntries then
+                local entries = {}
+                for id, entry in pairs(items) do
+                    entries[#entries + 1] = { id = id, t = (type(entry) == "table" and tonumber(entry.time)) or 0 }
+                end
+                table.sort(entries, function(a, b) return (a.t or 0) < (b.t or 0) end)
+                local toRemove = #entries - maxEntries
+                for i = 1, toRemove do
+                    items[entries[i].id] = nil
+                end
+            end
+        end
+    end
 end
 
 function AuctionHouseAPI:OnEvent(event, ...)

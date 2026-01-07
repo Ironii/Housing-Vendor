@@ -23,6 +23,7 @@ local QUALITY_NAMES = Constants.QUALITY_NAMES or {}
 local hordeFactionKeywords = Constants.hordeFactionKeywords or {}
 local allianceFactionKeywords = Constants.allianceFactionKeywords or {}
 local CRAFTED_ITEMS_LOOKUP = Constants.CRAFTED_ITEMS_LOOKUP or {}
+local BATCH_YIELD_SECONDS = 0.01
 local function InternString(str) return Util.InternString and Util.InternString(str) or str end
 local function GetApiDataCache() return Util.GetApiDataCache and Util.GetApiDataCache() or {} end
 local function TouchApiDataCacheItem(itemID) if Util.TouchApiDataCacheItem then Util.TouchApiDataCacheItem(itemID) end end
@@ -276,7 +277,7 @@ function DataManager:BatchLoadAPIData(allItems, filterOptions)
         -- Schedule next batch or complete
         if endIndex < #itemsToLoad then
             currentBatch = currentBatch + 1
-            C_Timer.After(0, function()
+            C_Timer.After(BATCH_YIELD_SECONDS, function()
                 ProcessBatch(endIndex + 1)
             end)
         else
@@ -464,7 +465,7 @@ function DataManager:BatchLoadAPIDataForItemIDs(itemIDs, onComplete, opts)
         end
 
         if endIndex < #itemsToLoad then
-            C_Timer.After(0.01, function()
+            C_Timer.After(BATCH_YIELD_SECONDS, function()
                 if (tonumber(state._batchCancelToken) or 0) ~= token then
                     state.batchLoadInProgress = false
                     if type(onComplete) == "function" then
