@@ -160,6 +160,17 @@ function HousingEvents:OnEvent(event, ...)
           HousingDB.settings.preloadDataOnLogin = false
         end
 
+        -- Auto-refresh owned decor snapshot when the main UI opens (can be disabled to reduce CPU spikes).
+        if HousingDB.settings.refreshOwnedDecorOnOpen == nil then
+          HousingDB.settings.refreshOwnedDecorOnOpen = true
+        end
+
+        -- If true, the outstanding items popup runs event handlers in the background (login-time).
+        -- If false, it only runs while an addon UI is open.
+        if HousingDB.settings.outstandingPopupBackground == nil then
+          HousingDB.settings.outstandingPopupBackground = true
+        end
+
         -- Auction House cache freshness (seconds). Used to avoid re-scanning prices too often.
         if HousingDB.settings.ahPriceMaxAgeSeconds == nil then
           HousingDB.settings.ahPriceMaxAgeSeconds = 6 * 60 * 60 -- 6 hours
@@ -168,6 +179,17 @@ function HousingEvents:OnEvent(event, ...)
         -- AH scan timeout (seconds) per Blizzard query; lower is faster but may miss results on laggy clients.
         if HousingDB.settings.ahScanTimeoutSeconds == nil then
           HousingDB.settings.ahScanTimeoutSeconds = 2.0
+        end
+
+        -- Auction cache entry cap (SavedVariables). Protects against unbounded growth.
+        if HousingDB.settings.ahPriceMaxEntries == nil then
+          HousingDB.settings.ahPriceMaxEntries = 5000
+        end
+
+        -- Housing catalog API safety delay (seconds). Lower values make catalog costs appear sooner,
+        -- but may reintroduce protected-call/taint issues on some clients.
+        if HousingDB.settings.catalogSafeDelaySeconds == nil then
+          HousingDB.settings.catalogSafeDelaySeconds = 6
         end
 
         -- Migration: preloading the datapack at login defeats low-memory goals.
@@ -297,9 +319,8 @@ function HousingEvents:OnEvent(event, ...)
     -- These were causing unnecessary CPU usage at login
     -- Both are now deferred until the UI is actually opened
 
-    -- CRITICAL: If zone popup is enabled, we MUST process data at login
-    -- Zone popup needs HousingExpansionData to detect items in zones
-    if HousingDB and HousingDB.settings and HousingDB.settings.showOutstandingPopup then
+    -- Optional: run zone popup event handlers in the background.
+    if HousingDB and HousingDB.settings and HousingDB.settings.showOutstandingPopup and HousingDB.settings.outstandingPopupBackground then
       -- Process deferred data aggregation so zone popup has data to work with
       if HousingDataAggregator and HousingDataAggregator.ProcessPendingData then
         HousingDataAggregator:ProcessPendingData()
@@ -311,12 +332,7 @@ function HousingEvents:OnEvent(event, ...)
       end
     end
 
-    -- Initialize vendor marker if enabled
-    if HousingDB and HousingDB.settings and HousingDB.settings.enableVendorMarker then
-      if HousingVendorMarker and HousingVendorMarker.Initialize then
-        pcall(HousingVendorMarker.Initialize, HousingVendorMarker)
-      end
-    end
+    -- Vendor marker nameplate tracking is started on-demand (e.g., when /hv mark is used).
   end
 
   if event == "PLAYER_LOGOUT" then

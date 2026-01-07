@@ -3,7 +3,12 @@ local ADDON_NAME, ns = ...
 local HousingVendorAddon = _G.HousingVendorAddon or {}
 _G.HousingVendorAddon = HousingVendorAddon
 
-HousingVendorAddon.version = " 05.01.26.03"
+-- Expose addon table for legacy modules that reference _G.HousingVendor
+if not _G.HousingVendor then
+    _G.HousingVendor = ns
+end
+
+HousingVendorAddon.version = " 07.01.26.04"
 
 -- NOTE: Avoid creating generic globals like `_G.Housing` (can collide with Blizzard UI / other addons).
 
@@ -27,6 +32,7 @@ SlashCmdList["HOUSINGVENDOR"] = function(msg)
         print("  /hv showall - Toggle showing unreleased items")
         print("  /hv api on|off - Toggle API calls")
         print("  /hv mark [name] - Open vendor marker UI")
+        print("  /hv mats [wishlist|raw|<itemID>] - Materials tracker")
         print("  /hv debugnp [toggle] - Nameplate debug")
         print("  /hv zone [debug] - Zone popup (optional debug)")
         print("  /hv cost <itemID> - Cost debug")
@@ -443,6 +449,9 @@ SlashCmdList["HOUSINGVENDOR"] = function(msg)
         -- Toggle showing all items (including unreleased/PTR items)
         if HousingFilters and HousingFilters.ToggleShowAll then
             local showingOnlyLive = HousingFilters:ToggleShowAll()
+            if _G.HousingCompactUI and _G.HousingCompactUI.SetShowOnlyAvailable then
+                pcall(_G.HousingCompactUI.SetShowOnlyAvailable, _G.HousingCompactUI, showingOnlyLive)
+            end
             if showingOnlyLive then
                 print("|cFF8A7FD4HousingVendor:|r Now showing only |cFF00FF00LIVE|r items")
             else
@@ -676,15 +685,60 @@ SlashCmdList["HOUSINGVENDOR"] = function(msg)
             DumpItem()
         end
         return
+    elseif cmd == "mats" or cmd == "materials" then
+        local ui = _G.HousingMaterialsTrackerUI
+        if not (ui and (ui.Toggle or ui.ShowWishlist)) then
+            print("|cFFFF4040HousingVendor:|r MaterialsTrackerUI module missing")
+            return
+        end
+
+        local raw = (args and tostring(args)) or ""
+        local lower = raw:lower()
+
+        if lower == "" or lower == "toggle" then
+            ui:Toggle()
+            return
+        end
+        if lower == "wishlist" then
+            ui:ShowWishlist()
+            return
+        end
+        if lower == "raw" or lower == "rawmats" then
+            if ui.ShowRawMats then
+                ui:ShowRawMats()
+            else
+                ui:ShowWishlist()
+            end
+            return
+        end
+
+        local itemID = tonumber(raw)
+        if itemID and ui.ShowForItem then
+            ui:ShowForItem(itemID)
+            return
+        end
+
+        ui:ShowWishlist()
+        return
     else
         -- Load data addon and open UI
         if HousingDataLoader then
             HousingDataLoader:EnsureDataLoaded(function()
+                local settings = HousingDB and HousingDB.settings or nil
+                local preferCompact = settings and settings.simpleMode == true
+                local compact = _G.HousingCompactUI or _G.HousingSimpleUI
+
+                if preferCompact and compact and compact.Toggle then
+                    compact:Toggle()
+                    return
+                end
+
                 if HousingUINew and HousingUINew.Toggle then
                     HousingUINew:Toggle()
-                else
-                    print("HousingVendor UI not available - modules may not be loaded")
+                    return
                 end
+
+                print("HousingVendor UI not available - modules may not be loaded")
             end)
         else
             print("HousingVendor DataLoader not available")
