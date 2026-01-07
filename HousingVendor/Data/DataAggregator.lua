@@ -4,6 +4,7 @@ local _G = _G
 -- Initialize global indexed tables
 _G.HousingExpansionData = _G.HousingExpansionData or {}
 _G.HousingProfessionData = _G.HousingProfessionData or {}
+_G.HousingProfessionTrainers = _G.HousingProfessionTrainers or {}
 _G.HousingReputationData = _G.HousingReputationData or {}
 _G.HousingCostData = _G.HousingCostData or {}
 -- Legacy name used by other modules (Reputation.lua / PreviewPanelData.lua)
@@ -27,6 +28,7 @@ local pendingAchievementData = {}
 local pendingDropData = {}
 local pendingReputationData = {}
 local pendingProfessionData = {}
+local pendingProfessionTrainerData = {}
 local pendingCostData = {}
 local isDataProcessed = false
 
@@ -37,7 +39,8 @@ local stats = {
     achievementCount = 0,
     dropCount = 0,
     reputationCount = 0,
-    professionCount = 0
+    professionCount = 0,
+    professionTrainerCount = 0,
 }
 
 local function SafeString(v)
@@ -209,6 +212,13 @@ function _G.HousingDataAggregator:RegisterProfession(items)
     end
 end
 
+function _G.HousingDataAggregator:RegisterProfessionTrainers(trainers)
+    -- PERFORMANCE: Defer processing until UI opens
+    if type(trainers) == "table" then
+        table.insert(pendingProfessionTrainerData, trainers)
+    end
+end
+
 function _G.HousingDataAggregator:RegisterCosts(costs)
     -- PERFORMANCE: Defer processing until UI opens
     if type(costs) == "table" then
@@ -342,6 +352,16 @@ function _G.HousingDataAggregator:ProcessPendingData()
         end
     end
 
+    -- Process profession trainer data (profession -> expansion -> faction -> trainer).
+    for _, trainers in ipairs(pendingProfessionTrainerData) do
+        for professionName, professionData in pairs(trainers) do
+            if type(professionName) == "string" and type(professionData) == "table" then
+                _G.HousingProfessionTrainers[professionName] = professionData
+                stats.professionTrainerCount = stats.professionTrainerCount + 1
+            end
+        end
+    end
+
     -- Process cost data
     for _, costs in ipairs(pendingCostData) do
         local function ApplyCostForItemID(itemID, costInfo)
@@ -387,6 +407,7 @@ function _G.HousingDataAggregator:ProcessPendingData()
     pendingDropData = {}
     pendingReputationData = {}
     pendingProfessionData = {}
+    pendingProfessionTrainerData = {}
     pendingCostData = {}
 
     isDataProcessed = true
@@ -396,8 +417,8 @@ function _G.HousingDataAggregator:ProcessPendingData()
     for _ in pairs(_G.HousingExpansionData) do
         expansionCount = expansionCount + 1
     end
-    print(string.format("|cFF8A7FD4HousingVendor:|r Processed %d items (%d vendors, %d quests, %d achievements, %d professions)",
-        expansionCount, stats.vendorCount, stats.questCount, stats.achievementCount, stats.professionCount))
+    print(string.format("|cFF8A7FD4HousingVendor:|r Processed %d items (%d vendors, %d quests, %d achievements, %d professions, %d trainer sets)",
+        expansionCount, stats.vendorCount, stats.questCount, stats.achievementCount, stats.professionCount, stats.professionTrainerCount))
 end
 
 -- Convenience function globals for generated files
@@ -411,6 +432,10 @@ end
 
 function _G.HousingDataAggregator_RegisterProfession(items)
     return _G.HousingDataAggregator:RegisterProfession(items)
+end
+
+function _G.HousingDataAggregator_RegisterProfessionTrainers(trainers)
+    return _G.HousingDataAggregator:RegisterProfessionTrainers(trainers)
 end
 
 function _G.HousingDataAggregator_RegisterCosts(costs)
@@ -449,6 +474,8 @@ local function TryInstallLegacyGlobalAssignmentHook()
                 _G.HousingDataAggregator:RegisterReputation(value)
             elseif key == "profession" and type(value) == "table" then
                 _G.HousingDataAggregator:RegisterProfession(value)
+            elseif key == "professionTrainers" and type(value) == "table" then
+                _G.HousingDataAggregator:RegisterProfessionTrainers(value)
             end
         end)
 
