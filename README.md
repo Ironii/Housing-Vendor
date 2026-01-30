@@ -1,72 +1,94 @@
-HousingVendor  (v05.01.26.03)
+# HousingVendor – The Ultimate WoW Housing Decor Addon
 
-Browse, track, and plan your housing decoration collection.
-Key Features
+_**Version: 31.01.26.50**_
 
-    Complete housing database covering all expansions
-    Modern UI with multiple themes and customizable settings
-    Advanced search & filtering (expansion, vendor, zone, type, category, source, etc.)
-    Collection tracking with ownership indicators (stored/placed)
-    Statistics dashboard with progress breakdowns
-    Waypoint navigation to vendor locations
-    Multi-language support (11 languages)
+_**Decor Data: 12.01.65617**_
 
-Panels
+The most comprehensive database for browsing, tracking, and planning your housing decoration collection across **all expansions**.
 
-    Main Browser: Filterable item list with preview panel
-    Statistics: Collection progress breakdowns
-    Achievements: Housing-related achievement tracking
-    Reputation: Reputation/renown requirements tracking across characters
-    Auction House (requires Auctionator or TSM):
-        Cache and display AH prices for profession-crafted decor
-        Preview panel shows Current AH Price (cached) with last-updated tooltip
-        Item list shows cached AH price on profession items (updates live during scans)
+## [**Any Issues use the issue tracker**](https://github.com/RenZhi-Code/Housing-Vendor/issues)
 
-Profession & Requirements
+### Key Features
 
-    Profession reagent requirements for crafted items with quantities
-    Quest and achievement requirements with tooltips
-    Reputation/renown requirements with progress indicators
+**Modern Full-Screen UI**  
+Sleek, themed interface with adjustable scale.  
+Always opens the rich, full Housing Codex view (Compact Mode completely removed).
 
-Color Coding
+**Integrated Settings Panel**  
+New **Settings** button in the footer opens inside the main window.  
+Back button to return. Also accessible via ESC → Interface → AddOns.
 
-    Red = Horde items
-    Blue = Alliance items
-    Gold = Achievement items
-    Bright Blue = Quest items
-    Orange/Red = Drop items
-    Green = Vendor items
-    Gray = Neutral items
+**Housing Endeavors Tab**  
+Built-in tracker for Housing Endeavors:
 
-Commands
-General
+```
+*   Active tasks with progress bars
+*   Reward previews
+*   House level & favor tracking
+```
 
-    /hv (or /housingvendor) — Toggle the main UI
-    /hv help — Show command list
-    /hv version — Show addon version
-    /hv showall — Toggle showing unreleased items
-    /hv stats — Show completion statistics
+**Reputation System with Decor Rewards**  
+Full HousingReps integration.  
+View every decor reward for 20+ factions (Classic, Dragonflight, The War Within, legacy).  
+Compact single-line display: Standing • Progress • Rep to Next.
 
-Auction House (requires Auctionator or TSM)
+**3D Model Viewer**  
+Spyglass button in item preview opens a stunning 3D viewer:
 
-    /hv ahscan all — Scan/cache AH prices for all profession decor
-    /hv ahscan visible — Scan/cache AH prices for currently filtered/visible profession decor
-    /hv ahscan status — Show AH scan status
-    /hv ahscan stop — Stop the current AH scan
+```
+*   Mouse controls: Left-drag (pitch), Right-drag (yaw), Alt+drag (roll), Shift+drag (fast), Wheel (zoom)
+*   Quick presets: 45°, 90°, 180°, Flip
+*   Reset view button
+*   Custom themed controls & helpful tooltips
+```
 
-Tools / Debug
+**Zone Helper Popup**  
+Shows uncollected decor in your current zone.  
+One-click opens full UI filtered to that zone.  
+Cleaner, narrower design with themed buttons.
 
-    /hv api on|off — Toggle API calls
-    /hv zone [debug] — Open zone popup
-    /hv mark [name] — Open vendor marker UI
-    /hv mem [gc] — Show memory usage (optional GC)
-    /hv diag — Debug DataManager/API state
-    /hv debugnp [toggle] — Nameplate debug
-    /hv cost <itemID> — Cost debug
-    /hv item <itemID> — Item debug
+**Advanced Search & Filtering**  
+Filter items by:  
+Expansion • Vendor • Zone • Type • Category • Source • Faction • Collection status and more
 
-Minimap Button
+**Collection Tracking**  
+Clear indicators: Collected • Stored • Placed  
+Accurate across all characters
 
-    Left-click: Open main UI
-    Right-click: Open zone popup
-    Drag: Move button position
+**Profession Decor Pricing**  
+Auction House prices (requires Auctionator or TSM):
+
+```
+*   Scan all or filtered items
+*   Current price & total material cost estimates
+```
+
+**Crafting & Materials Tracker**  
+Build shopping lists for crafted decor:
+
+```
+*   Add items to craft queue
+*   Auto-aggregates all reagents
+*   Shows what you can craft now vs. what’s missing
+*   Counts from bags, bank, warband, alts
+*   Optional AH value breakdown
+```
+
+**Vendor Navigation Tools**
+
+```
+*   Waypoints to vendors
+*   Cross-expansion portal hints
+*   Optional colored nameplate markers
+*   Interactive world map pins with tooltips & right-click waypoints
+```
+
+**Handy Slash Commands**
+
+```
+`/hv` – Open main UI  
+`/hv mats` – Materials Tracker  
+`/hv zone` – Force zone popup  
+`/hv scan` – Refresh collection  
+`/hv ahscan` – Price scan  
+```
