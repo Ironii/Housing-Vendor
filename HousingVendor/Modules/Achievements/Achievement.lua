@@ -270,7 +270,6 @@ function AchievementHandler:Initialize()
             -- Criteria updated, schedule a delayed refresh
             if lastTimerStarted + .8 < GetTime() then
                 C_Timer.After(1, function()
-                    print("updating")
                     AchievementHandler:RefreshAllAchievements()
                 end)
                 lastTimerStarted = GetTime()
